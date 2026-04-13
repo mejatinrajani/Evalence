@@ -155,36 +155,50 @@ def health_check(db: Session = Depends(database.get_db)):
 def register_user(user: schemas.UserCreate, db: Session = Depends(database.get_db)):
     """Register a new user with email, password, name, and role."""
     try:
+        print(f"[REG] Starting registration for email: {user.email}")
+        
         # Validate email uniqueness
+        print(f"[REG] Checking email uniqueness...")
         db_user = db.query(models.User).filter(models.User.email == user.email).first()
         if db_user:
+            print(f"[REG] Email already exists")
             raise HTTPException(status_code=400, detail="Email already registered")
         
         # Validate password strength (minimum 8 characters)
+        print(f"[REG] Validating password strength...")
         if len(user.password) < 8:
             raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
         
         # Hash password
+        print(f"[REG] Hashing password...")
         hashed_pwd = security.get_password_hash(user.password)
         
         # Create new user
+        print(f"[REG] Creating user object...")
         new_user = models.User(
             email=user.email,
             hashed_password=hashed_pwd,
             full_name=user.full_name,
             role=user.role
         )
+        
+        print(f"[REG] Adding user to database...")
         db.add(new_user)
         db.commit()
+        print(f"[REG] Committed to database")
+        
         db.refresh(new_user)
+        print(f"[REG] Refreshed user object")
         
         # Send welcome email in background to avoid blocking
+        print(f"[REG] Sending welcome email (async)...")
         try:
             EmailService.welcome_email(new_user.email, new_user.full_name, new_user.role)
         except Exception as e:
             print(f"[WARN] Welcome email failed: {str(e)}")
             # Don't fail registration if email fails
         
+        print(f"[REG] Registration successful for {user.email}")
         return new_user
     except HTTPException:
         raise
@@ -665,6 +679,550 @@ def submit_evaluation(
         )
     
     return {"message": "Score submitted"}
+
+
+# =============================================
+# JUDGE PORTAL - NEW ENDPOINTS
+# =============================================
+
+@app.get("/api/judge/dashboard", tags=["judge-portal"])
+def get_judge_dashboard(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("judge", "super_admin"))
+):
+    """Get judge dashboard summary with assignment counts and progress."""
+    try:
+        # Get all judge assignments for current user
+        assignments = db.query(models.JudgeAssignment).filter(
+            models.JudgeAssignment.judge_id == current_user.id
+        ).all()
+        
+        if not assignments:
+            return schemas.JudgeDashboardResponse(
+                total_assigned=0,
+                completed=0,
+                pending=0,
+                in_progress=0,
+                completion_percentage=0.0,
+                current_round=None,
+                upcoming_rounds=[],
+                recent_activity=[]
+            )
+        
+        total_assigned = len(assignments)
+        completed = sum(1 for a in assignments if a.status == "completed")
+        pending = sum(1 for a in assignments if a.status == "pending")
+        in_progress = sum(1 for a in assignments if a.status == "evaluating")
+        
+        completion_percentage = (completed / total_assigned * 100) if total_assigned > 0 else 0.0
+        
+        # Get current active round
+        current_round = db.query(models.Round).order_by(models.Round.id.desc()).first()
+        current_round_dict = None
+        if current_round:
+            current_round_dict = {
+                "id": current_round.id,
+                "name": current_round.name,
+                "criteria_count": len(current_round.criteria)
+            }
+        
+        # Get upcoming rounds (future rounds)
+        upcoming_rounds = []
+        all_rounds = db.query(models.Round).all()
+        for r in all_rounds:
+            if current_round is None or r.id > current_round.id:
+                upcoming_rounds.append({
+                    "id": r.id,
+                    "name": r.name,
+                    "criteria_count": len(r.criteria)
+                })
+        
+        # Get recent activity
+        recent_evals = db.query(models.Evaluation).filter(
+            models.Evaluation.judge_id == current_user.id
+        ).order_by(models.Evaluation.updated_at.desc()).limit(5).all()
+        
+        recent_activity = [
+            {
+                "type": "evaluation",
+                "team_id": e.team_id,
+                "team_name": e.team.name if e.team else "Unknown",
+                "score": e.score,
+                "timestamp": e.updated_at.isoformat() if e.updated_at else None
+            }
+            for e in recent_evals
+        ]
+        
+        return schemas.JudgeDashboardResponse(
+            total_assigned=total_assigned,
+            completed=completed,
+            pending=pending,
+            in_progress=in_progress,
+            completion_percentage=round(completion_percentage, 2),
+            current_round=current_round_dict,
+            upcoming_rounds=upcoming_rounds,
+            recent_activity=recent_activity
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard: {str(e)}")
+
+
+@app.get("/api/judge/evaluations/assigned", response_model=List[schemas.TeamQueueItemResponse], tags=["judge-portal"])
+def get_assigned_teams(
+    round_id: Optional[int] = None,
+    status: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("judge", "super_admin"))
+):
+    """Get list of teams assigned to judge with pagination and filtering."""
+    try:
+        query = db.query(models.JudgeAssignment).filter(
+            models.JudgeAssignment.judge_id == current_user.id
+        )
+        
+        # Filter by round if specified
+        if round_id:
+            query = query.filter(models.JudgeAssignment.round_id == round_id)
+        
+        # Filter by status if specified
+        if status:
+            query = query.filter(models.JudgeAssignment.status == status)
+        
+        assignments = query.offset(skip).limit(limit).all()
+        
+        result = []
+        for assignment in assignments:
+            team = assignment.team
+            hackathon = assignment.hackathon
+            round_obj = assignment.round
+            project = db.query(models.Project).filter(models.Project.team_id == team.id).first()
+            
+            # Count criteria
+            criteria_count = len(round_obj.criteria) if round_obj else 0
+            total_points = sum(c.max_points for c in round_obj.criteria) if round_obj else 0
+            
+            result.append(schemas.TeamQueueItemResponse(
+                id=assignment.id,
+                team_id=team.id,
+                team_name=team.name,
+                hackathon_id=hackathon.id,
+                hackathon_name=hackathon.name,
+                round_id=round_obj.id if round_obj else 0,
+                round_name=round_obj.name if round_obj else "Unknown",
+                status=assignment.status,
+                assigned_at=assignment.assigned_at,
+                started_at=assignment.started_at,
+                completed_at=assignment.completed_at,
+                members=team.members if hasattr(team, 'members') and team.members else [],
+                project_title=project.title if project else None,
+                project_description=project.description if project else None,
+                criteria_count=criteria_count,
+                total_possible_points=total_points
+            ))
+        
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch assigned teams: {str(e)}")
+
+
+@app.get("/api/judge/evaluations/assigned/{assignment_id}", response_model=schemas.TeamEvaluationDetailResponse, tags=["judge-portal"])
+def get_team_evaluation_details(
+    assignment_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("judge", "super_admin"))
+):
+    """Get detailed information for evaluating a specific team."""
+    try:
+        assignment = db.query(models.JudgeAssignment).filter(
+            models.JudgeAssignment.id == assignment_id,
+            models.JudgeAssignment.judge_id == current_user.id
+        ).first()
+        
+        if not assignment:
+            raise HTTPException(status_code=404, detail="Assignment not found or access denied")
+        
+        team = assignment.team
+        hackathon = assignment.hackathon
+        round_obj = assignment.round
+        project = db.query(models.Project).filter(models.Project.team_id == team.id).first()
+        
+        # Get existing evaluations for this team
+        existing_evals = db.query(models.Evaluation).filter(
+            models.Evaluation.judge_id == current_user.id,
+            models.Evaluation.team_id == team.id
+        ).all()
+        
+        existing_evals_dict = {e.criterion_id: e for e in existing_evals}
+        
+        # Build criteria list with current scores
+        criteria_list = []
+        for criterion in round_obj.criteria if round_obj else []:
+            existing_eval = existing_evals_dict.get(criterion.id)
+            criteria_list.append(schemas.CriterionEvaluationDetail(
+                criterion_id=criterion.id,
+                criterion_name=criterion.name,
+                max_points=criterion.max_points,
+                current_score=existing_eval.score if existing_eval else None,
+                feedback=existing_eval.feedback if existing_eval else None,
+                description=""
+            ))
+        
+        return schemas.TeamEvaluationDetailResponse(
+            assignment_id=assignment.id,
+            team_id=team.id,
+            team_name=team.name,
+            hackathon_id=hackathon.id,
+            hackathon_name=hackathon.name,
+            round_id=round_obj.id if round_obj else 0,
+            round_name=round_obj.name if round_obj else "Unknown",
+            project_title=project.title if project else None,
+            project_description=project.description if project else None,
+            demo_url=project.demo_url if project else None,
+            github_url=project.github_url if project else None,
+            tech_stack=project.tech_stack if project else None,
+            members=team.members if hasattr(team, 'members') and team.members else [],
+            criteria=criteria_list,
+            status=assignment.status,
+            assigned_at=assignment.assigned_at,
+            started_at=assignment.started_at,
+            completed_at=assignment.completed_at
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch evaluation details: {str(e)}")
+
+
+@app.post("/api/judge/evaluations/submit", status_code=status.HTTP_201_CREATED, tags=["judge-portal"])
+def submit_team_evaluation(
+    request: schemas.EvaluationSubmitRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("judge", "super_admin"))
+):
+    """Submit evaluation scores for a team."""
+    try:
+        # Verify assignment exists and belongs to judge
+        from services.evaluation import EvaluationService
+        
+        assignment = db.query(models.JudgeAssignment).filter(
+            models.JudgeAssignment.judge_id == current_user.id,
+            models.JudgeAssignment.team_id == request.team_id,
+            models.JudgeAssignment.round_id == request.round_id
+        ).first()
+        
+        if not assignment:
+            raise HTTPException(status_code=404, detail="Assignment not found")
+        
+        # Get round and validate scores
+        round_obj = db.query(models.Round).filter(models.Round.id == request.round_id).first()
+        if not round_obj:
+            raise HTTPException(status_code=404, detail="Round not found")
+        
+        # Validate that all criteria are scored
+        criteria_ids = {c.id for c in round_obj.criteria}
+        submitted_ids = set(request.scores.keys())
+        
+        if submitted_ids != criteria_ids:
+            missing = criteria_ids - submitted_ids
+            raise HTTPException(status_code=400, detail=f"Missing scores for criteria: {missing}")
+        
+        # Validate each score
+        for criterion in round_obj.criteria:
+            score = request.scores.get(criterion.id)
+            if score is None or score < 0 or score > criterion.max_points:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid score for {criterion.name}: must be 0-{criterion.max_points}"
+                )
+        
+        # Save all evaluations
+        for criterion_id, score in request.scores.items():
+            feedback = request.feedback.get(criterion_id) if request.feedback else None
+            
+            # Upsert evaluation
+            existing = db.query(models.Evaluation).filter(
+                models.Evaluation.judge_id == current_user.id,
+                models.Evaluation.team_id == request.team_id,
+                models.Evaluation.criterion_id == criterion_id
+            ).first()
+            
+            if existing:
+                existing.score = score
+                existing.feedback = feedback
+            else:
+                new_eval = models.Evaluation(
+                    judge_id=current_user.id,
+                    team_id=request.team_id,
+                    criterion_id=criterion_id,
+                    score=score,
+                    feedback=feedback
+                )
+                db.add(new_eval)
+        
+        # Update assignment status
+        assignment.status = "completed"
+        assignment.completed_at = datetime.now()
+        
+        db.commit()
+        
+        # Send confirmation email
+        team = assignment.team
+        hackathon = assignment.hackathon
+        total_score = sum(request.scores.values())
+        
+        EmailService.score_submitted_notification(
+            current_user.email,
+            current_user.full_name,
+            team.name,
+            hackathon.name,
+            total_score,
+            sum(c.max_points for c in round_obj.criteria)
+        )
+        
+        return {"message": "Evaluation submitted successfully", "assignment_id": assignment.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to submit evaluation: {str(e)}")
+
+
+@app.put("/api/judge/evaluations/{assignment_id}", tags=["judge-portal"])
+def update_evaluation(
+    assignment_id: int,
+    request: schemas.EvaluationUpdateRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("judge", "super_admin"))
+):
+    """Update an existing evaluation (only if not finalized)."""
+    try:
+        assignment = db.query(models.JudgeAssignment).filter(
+            models.JudgeAssignment.id == assignment_id,
+            models.JudgeAssignment.judge_id == current_user.id
+        ).first()
+        
+        if not assignment:
+            raise HTTPException(status_code=404, detail="Assignment not found")
+        
+        if assignment.status == "finalized":
+            raise HTTPException(status_code=403, detail="Cannot edit finalized evaluation")
+        
+        # Get round for validation
+        round_obj = assignment.round
+        if not round_obj:
+            raise HTTPException(status_code=404, detail="Round not found")
+        
+        # Validate scores
+        for criterion_id, score in request.scores.items():
+            criterion = next((c for c in round_obj.criteria if c.id == criterion_id), None)
+            if not criterion:
+                raise HTTPException(status_code=400, detail=f"Invalid criterion: {criterion_id}")
+            
+            if score < 0 or score > criterion.max_points:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid score for {criterion.name}: must be 0-{criterion.max_points}"
+                )
+        
+        # Update evaluations
+        for criterion_id, score in request.scores.items():
+            feedback = request.feedback.get(criterion_id) if request.feedback else None
+            
+            existing = db.query(models.Evaluation).filter(
+                models.Evaluation.judge_id == current_user.id,
+                models.Evaluation.team_id == assignment.team_id,
+                models.Evaluation.criterion_id == criterion_id
+            ).first()
+            
+            if existing:
+                existing.score = score
+                existing.feedback = feedback
+            else:
+                new_eval = models.Evaluation(
+                    judge_id=current_user.id,
+                    team_id=assignment.team_id,
+                    criterion_id=criterion_id,
+                    score=score,
+                    feedback=feedback
+                )
+                db.add(new_eval)
+        
+        db.commit()
+        
+        return {"message": "Evaluation updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update evaluation: {str(e)}")
+
+
+@app.get("/api/judge/evaluations/history", response_model=List[schemas.EvaluationHistoryItemResponse], tags=["judge-portal"])
+def get_evaluation_history(
+    hackathon_id: Optional[int] = None,
+    round_id: Optional[int] = None,
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("judge", "super_admin"))
+):
+    """Get judge's past evaluations with optional filtering."""
+    try:
+        query = db.query(models.JudgeAssignment).filter(
+            models.JudgeAssignment.judge_id == current_user.id,
+            models.JudgeAssignment.status == "completed"
+        )
+        
+        if hackathon_id:
+            query = query.filter(models.JudgeAssignment.hackathon_id == hackathon_id)
+        
+        if round_id:
+            query = query.filter(models.JudgeAssignment.round_id == round_id)
+        
+        assignments = query.order_by(models.JudgeAssignment.completed_at.desc()).offset(skip).limit(limit).all()
+        
+        result = []
+        for assignment in assignments:
+            team = assignment.team
+            hackathon = assignment.hackathon
+            round_obj = assignment.round
+            
+            # Calculate total and average score for this evaluation
+            evals = db.query(models.Evaluation).filter(
+                models.Evaluation.judge_id == current_user.id,
+                models.Evaluation.team_id == team.id
+            ).all()
+            
+            total_score = sum(e.score for e in evals) if evals else 0
+            average_score = (total_score / len(evals)) if evals else 0
+            
+            result.append(schemas.EvaluationHistoryItemResponse(
+                id=assignment.id,
+                team_id=team.id,
+                team_name=team.name,
+                hackathon_id=hackathon.id,
+                hackathon_name=hackathon.name,
+                round_id=round_obj.id if round_obj else 0,
+                round_name=round_obj.name if round_obj else "Unknown",
+                criteria_count=len(evals),
+                total_score=float(total_score),
+                average_score=float(average_score),
+                created_at=assignment.assigned_at,
+                updated_at=assignment.completed_at
+            ))
+        
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch evaluation history: {str(e)}")
+
+
+@app.get("/api/judge/progress", response_model=schemas.JudgeProgressResponse, tags=["judge-portal"])
+def get_judge_progress(
+    hackathon_id: Optional[int] = None,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("judge", "super_admin"))
+):
+    """Get judge's evaluation progress and performance statistics."""
+    try:
+        from services.evaluation import EvaluationService
+        
+        # Get all assignments
+        query = db.query(models.JudgeAssignment).filter(
+            models.JudgeAssignment.judge_id == current_user.id
+        )
+        
+        if hackathon_id:
+            query = query.filter(models.JudgeAssignment.hackathon_id == hackathon_id)
+        
+        assignments = query.all()
+        
+        completed_assignments = [a for a in assignments if a.status == "completed"]
+        pending_assignments = [a for a in assignments if a.status == "pending"]
+        
+        # Get all evaluations for this judge
+        evals = db.query(models.Evaluation).filter(
+            models.Evaluation.judge_id == current_user.id
+        ).all()
+        
+        if hackathon_id:
+            hackathon = db.query(models.Hackathon).filter(models.Hackathon.id == hackathon_id).first()
+            if hackathon:
+                team_ids = {t.id for t in hackathon.teams}
+                evals = [e for e in evals if e.team_id in team_ids]
+        
+        # Calculate statistics
+        total_evaluations = len(evals)
+        completed_count = len(completed_assignments)
+        pending_count = len(pending_assignments)
+        
+        # Average score calculation
+        average_score = (sum(e.score for e in evals) / len(evals)) if evals else 0.0
+        
+        # Score distribution (count by grade)
+        eval_service = EvaluationService()
+        score_distribution = {
+            "A": 0, "B": 0, "C": 0, "D": 0, "F": 0
+        }
+        
+        for eval_obj in evals:
+            # Calculate percentage based on criterion max points
+            if eval_obj.criterion and eval_obj.criterion.max_points > 0:
+                percentage = (eval_obj.score / eval_obj.criterion.max_points * 100)
+                grade = eval_service.convert_score_to_grade(percentage)
+                score_distribution[grade] = score_distribution.get(grade, 0) + 1
+        
+        # Get top and lowest performing criteria
+        criteria_scores = {}
+        for eval_obj in evals:
+            if eval_obj.criterion:
+                crit_id = eval_obj.criterion.id
+                crit_name = eval_obj.criterion.name
+                if crit_id not in criteria_scores:
+                    criteria_scores[crit_id] = {"name": crit_name, "scores": [], "max_points": eval_obj.criterion.max_points}
+                criteria_scores[crit_id]["scores"].append(eval_obj.score)
+        
+        criteria_stats = []
+        for crit_id, data in criteria_scores.items():
+            avg = sum(data["scores"]) / len(data["scores"]) if data["scores"] else 0
+            percentage = (avg / data["max_points"] * 100) if data["max_points"] > 0 else 0
+            criteria_stats.append({
+                "criterion_id": crit_id,
+                "name": data["name"],
+                "average_score": round(avg, 2),
+                "percentage": round(percentage, 2),
+                "count": len(data["scores"])
+            })
+        
+        # Sort by percentage
+        top_criteria = sorted(criteria_stats, key=lambda x: x["percentage"], reverse=True)[:3]
+        lowest_criteria = sorted(criteria_stats, key=lambda x: x["percentage"])[:3]
+        
+        # Completion trend (by day in last 7 days)
+        from datetime import timedelta
+        trend = []
+        for i in range(7):
+            day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=i)
+            day_next = day + timedelta(days=1)
+            count = len([a for a in completed_assignments if a.completed_at and day <= a.completed_at < day_next])
+            trend.append({
+                "date": day.strftime("%Y-%m-%d"),
+                "completed": count
+            })
+        
+        return schemas.JudgeProgressResponse(
+            total_evaluations=total_evaluations,
+            completed_evaluations=completed_count,
+            pending_evaluations=pending_count,
+            average_score=round(average_score, 2),
+            score_distribution=score_distribution,
+            top_performing_criteria=top_criteria,
+            lowest_performing_criteria=lowest_criteria,
+            completion_trend=trend
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch progress: {str(e)}")
 
 # =============================================
 # LEADERBOARD (Z-SCORE NORMALIZED)

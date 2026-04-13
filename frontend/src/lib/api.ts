@@ -1,6 +1,9 @@
 // Use environment variable or fallback to localhost for dev
 const BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api'
 
+console.log('[API Client] Initialized with BASE_URL:', BASE_URL)
+console.log('[API Client] VITE_API_URL env var:', import.meta.env.VITE_API_URL)
+
 export const api = {
   getAuthToken: () => localStorage.getItem('evalence_token'),
   getRefreshToken: () => localStorage.getItem('evalence_refresh_token'),
@@ -18,22 +21,30 @@ export const api = {
   },
 
   clearAuth: () => {
+    console.log('[Auth] Clearing authentication tokens')
     localStorage.removeItem('evalence_token')
     localStorage.removeItem('evalence_refresh_token')
-    // Optional: redirect to login
-    if (window.location.pathname !== '/auth/login') {
+    localStorage.removeItem('evalence_user_id')
+    localStorage.removeItem('evalence_user_role')
+    // Only redirect if not already on login page
+    const currentPath = window.location.pathname
+    if (!currentPath.includes('/auth/login') && !currentPath.includes('/auth/register')) {
+      console.log('[Auth] Redirecting to login from:', currentPath)
       window.location.href = '/auth/login'
+    } else {
+      console.log('[Auth] Already on auth page, no redirect needed')
     }
   },
 
   async refreshToken() {
     const refreshToken = this.getRefreshToken()
     if (!refreshToken) {
-      this.clearAuth()
+      console.log('[Auth] No refresh token available')
       return null
     }
 
     try {
+      console.log('[Auth] Attempting to refresh token')
       const response = await fetch(`${BASE_URL}/auth/refresh`, {
         method: 'POST',
         headers: {
@@ -45,14 +56,14 @@ export const api = {
       if (response.ok) {
         const data = await response.json()
         this.setAuthToken(data.access_token)
+        console.log('[Auth] Token refreshed successfully')
         return data.access_token
       } else {
-        this.clearAuth()
+        console.log('[Auth] Token refresh failed with status:', response.status)
         return null
       }
     } catch (error) {
-      console.error('Token refresh failed:', error)
-      this.clearAuth()
+      console.error('[Auth] Token refresh error:', error)
       return null
     }
   },
@@ -63,38 +74,56 @@ export const api = {
 
     if (token) headers['Authorization'] = `Bearer ${token}`
 
+    // Don't set Content-Type for FormData - browser will handle it
     if (!(options.body instanceof FormData)) {
       headers['Content-Type'] = 'application/json'
     }
 
-    try {
-      const response = await fetch(`${BASE_URL}${endpoint}`, {
-        ...options,
-        headers: { ...(options.headers as Record<string, string>), ...headers },
-      })
+    const fullUrl = `${BASE_URL}${endpoint}`
+    const requestInit = {
+      ...options,
+      headers: { ...(options.headers as Record<string, string>), ...headers },
+    }
 
-      // Handle token expiration (401)
-      if (response.status === 401 && retryCount === 0) {
-        console.warn('⚠️ Token expired, attempting refresh...')
+    const method = options.method || 'GET'
+    console.log(`[API] REQUEST: ${method} ${endpoint}`, {
+      url: fullUrl,
+      hasToken: !!token,
+      bodyType: options.body instanceof FormData ? 'FormData' : 'JSON',
+    })
+
+    try {
+      const response = await fetch(fullUrl, requestInit)
+      console.log(`[API] RESPONSE: ${endpoint} <- Status ${response.status}`)
+
+      // Handle token expiration (401) - but ONLY if we had a token and it's not a login/register endpoint
+      if (response.status === 401 && token && retryCount === 0 && !endpoint.includes('/token') && !endpoint.includes('/register')) {
+        console.warn('[API] 401 error with existing token, attempting refresh...')
         const newToken = await this.refreshToken()
         
         if (newToken) {
+          console.log('[API] Token refreshed, retrying request...')
           // Retry the request with new token
           return this.request(endpoint, options, 1)
         } else {
-          // Refresh failed, redirect to login
+          console.warn('[API] Token refresh failed, clearing auth')
+          this.clearAuth()
           throw new Error('Session expired. Please log in again.')
         }
       }
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`)
+        const errorMessage = errorData.detail || `HTTP ${response.status}: ${response.statusText}`
+        console.error(`[API] ERROR: ${endpoint}: ${errorMessage}`)
+        throw new Error(errorMessage)
       }
 
-      return response.json()
+      const data = await response.json()
+      console.log(`[API] SUCCESS: ${endpoint}`, data)
+      return data
     } catch (error: any) {
-      console.error(`API Error [${endpoint}]:`, error.message)
+      console.error(`[API] EXCEPTION: ${endpoint}:`, error.message)
       throw error
     }
   },

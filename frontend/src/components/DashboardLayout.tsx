@@ -10,19 +10,35 @@ export function DashboardLayout() {
   const navigate = useNavigate()
   const [user, setUser] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const loadUser = async () => {
       try {
+        console.log('[DashboardLayout] Loading authenticated user...')
+        const token = localStorage.getItem('evalence_token')
+        if (!token) {
+          console.log('[DashboardLayout] No token found, redirecting to login')
+          navigate('/auth/login')
+          return
+        }
+        
         const userData = await api.get('/auth/me')
+        console.log('[DashboardLayout] User loaded:', userData)
         setUser(userData)
-      } catch (err) {
-        console.error(err)
-        navigate('/auth/login')
+      } catch (err: any) {
+        console.error('[DashboardLayout] Auth error:', err.message)
+        setError(err.message)
+        // Only redirect if it's an auth error, not a network error
+        if (err.message.includes('Session expired') || err.message.includes('401') || err.message.includes('Could not validate')) {
+          console.log('[DashboardLayout] Auth failed, redirecting to login')
+          setTimeout(() => navigate('/auth/login'), 1000)
+        }
       } finally {
         setLoading(false)
       }
     }
+    
     loadUser()
   }, [navigate])
 
@@ -78,8 +94,20 @@ export function DashboardLayout() {
     return (
       <div className="w-screen h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-3">
-          <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
-          <p className="text-slate-600 font-medium">Loading dashboard...</p>
+          {error ? (
+            <>
+              <div className="text-center">
+                <p className="text-red-600 font-bold text-lg mb-2">Authentication Failed</p>
+                <p className="text-slate-600 text-sm max-w-md">{error}</p>
+                <p className="text-slate-500 text-xs mt-4">Redirecting to login...</p>
+              </div>
+            </>
+          ) : (
+            <>
+              <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
+              <p className="text-slate-600 font-medium">Loading dashboard...</p>
+            </>
+          )}
         </div>
       </div>
     )

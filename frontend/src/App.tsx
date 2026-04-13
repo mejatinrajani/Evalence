@@ -17,6 +17,8 @@ import MyHackathons from './pages/dashboard/MyHackathons'
 import HackathonDetail from './pages/dashboard/HackathonDetail'
 import Leaderboard from './pages/Leaderboard'
 import EventsDiscovery from './pages/EventsDiscovery'
+// Judge Portal Components
+import { EvaluationsPage, MyRatingsPage, JudgeStatsPage } from './components/judge'
 
 export default function App() {
   return (
@@ -53,6 +55,11 @@ export default function App() {
           <Route path="/dashboard/profile" element={<ProfileSettings />} />
           <Route path="/organizer" element={<MyHackathons />} />
           <Route path="/organizer/hackathons/:hackathonId" element={<HackathonDetail />} />
+          {/* Judge Portal Routes */}
+          <Route path="/judge" element={<JudgeDashboard />} />
+          <Route path="/judge/evaluations" element={<EvaluationsPage />} />
+          <Route path="/judge/history" element={<MyRatingsPage />} />
+          <Route path="/judge/progress" element={<JudgeStatsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

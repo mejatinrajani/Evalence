@@ -44,3 +44,68 @@ def create_refresh_token(data: dict):
     to_encode.update({"exp": expire, "type": "refresh"})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+
+# ============================================================
+# JUDGE-SPECIFIC AUTHORIZATION
+# ============================================================
+
+def is_judge_role(user):
+    """
+    Check if user has judge role.
+    
+    Args:
+        user: User object from database
+    
+    Returns:
+        bool: True if user role is 'judge'
+    """
+    if not user:
+        return False
+    return str(user.role) == 'judge' or user.role == 'judge'
+
+
+def verify_judge_assignment(judge_id: int, assignment_id: int, db):
+    """
+    Verify that a judge owns an assignment.
+    
+    Args:
+        judge_id: The judge ID
+        assignment_id: The assignment ID
+        db: Database session
+    
+    Returns:
+        bool: True if judge owns this assignment
+    """
+    from models import JudgeAssignment
+    
+    assignment = db.query(JudgeAssignment).filter(
+        JudgeAssignment.id == assignment_id,
+        JudgeAssignment.judge_id == judge_id
+    ).first()
+    
+    return assignment is not None
+
+
+def verify_judge_can_evaluate_team(judge_id: int, team_id: int, hackathon_id: int, db):
+    """
+    Verify that a judge is assigned to evaluate a team.
+    
+    Args:
+        judge_id: The judge ID
+        team_id: The team ID
+        hackathon_id: The hackathon ID
+        db: Database session
+    
+    Returns:
+        bool: True if judge can evaluate this team
+    """
+    from models import JudgeAssignment
+    
+    assignment = db.query(JudgeAssignment).filter(
+        JudgeAssignment.judge_id == judge_id,
+        JudgeAssignment.team_id == team_id,
+        JudgeAssignment.hackathon_id == hackathon_id
+    ).first()
+    
+    return assignment is not None

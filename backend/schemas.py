@@ -319,6 +319,113 @@ class AnnouncementSendEmailRequest(BaseModel):
 
 
 # =============================================
+# JUDGE PORTAL - EVALUATIONS
+# =============================================
+class EvaluationResponse(BaseModel):
+    id: int
+    judge_id: int
+    team_id: int
+    criterion_id: int
+    score: int
+    feedback: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    class Config:
+        from_attributes = True
+
+class EvaluationSubmitRequest(BaseModel):
+    team_id: int
+    round_id: int
+    scores: Dict[int, int]  # criterion_id -> score mapping
+    feedback: Optional[Dict[int, str]] = None  # criterion_id -> feedback mapping
+
+class TeamQueueItemResponse(BaseModel):
+    id: int
+    team_id: int
+    team_name: str
+    hackathon_id: int
+    hackathon_name: str
+    round_id: int
+    round_name: str
+    status: str  # pending, evaluating, completed
+    assigned_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    members: Optional[List[Dict[str, Any]]] = None
+    project_title: Optional[str] = None
+    project_description: Optional[str] = None
+    criteria_count: int = 0
+    total_possible_points: int = 0
+    class Config:
+        from_attributes = True
+
+class CriterionEvaluationDetail(BaseModel):
+    criterion_id: int
+    criterion_name: str
+    max_points: int
+    current_score: Optional[int] = None
+    feedback: Optional[str] = None
+    description: Optional[str] = None
+
+class TeamEvaluationDetailResponse(BaseModel):
+    assignment_id: int
+    team_id: int
+    team_name: str
+    hackathon_id: int
+    hackathon_name: str
+    round_id: int
+    round_name: str
+    project_title: Optional[str] = None
+    project_description: Optional[str] = None
+    demo_url: Optional[str] = None
+    github_url: Optional[str] = None
+    tech_stack: Optional[List[str]] = None
+    members: Optional[List[Dict[str, Any]]] = None
+    criteria: List[CriterionEvaluationDetail] = []
+    status: str
+    assigned_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+class JudgeDashboardResponse(BaseModel):
+    total_assigned: int
+    completed: int
+    pending: int
+    in_progress: int
+    completion_percentage: float
+    current_round: Optional[Dict[str, Any]] = None
+    upcoming_rounds: List[Dict[str, Any]] = []
+    recent_activity: List[Dict[str, Any]] = []
+
+class EvaluationHistoryItemResponse(BaseModel):
+    id: int
+    team_id: int
+    team_name: str
+    hackathon_id: int
+    hackathon_name: str
+    round_id: int
+    round_name: str
+    criteria_count: int
+    total_score: float
+    average_score: float
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+class JudgeProgressResponse(BaseModel):
+    total_evaluations: int
+    completed_evaluations: int
+    pending_evaluations: int
+    average_score: float
+    score_distribution: Dict[str, int]  # grade -> count
+    top_performing_criteria: List[Dict[str, Any]] = []
+    lowest_performing_criteria: List[Dict[str, Any]] = []
+    completion_trend: List[Dict[str, Any]] = []
+
+class EvaluationUpdateRequest(BaseModel):
+    scores: Dict[int, int]  # criterion_id -> score mapping
+    feedback: Optional[Dict[int, str]] = None  # criterion_id -> feedback mapping
+
+# =============================================
 # PARTICIPANTS
 # =============================================
 class ParticipantRegistrationResponse(BaseModel):

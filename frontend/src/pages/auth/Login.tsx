@@ -20,24 +20,43 @@ export default function Login() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!email || !password) {
+      toast.error('Email and password are required')
+      return
+    }
+    
+    console.log('[Login] Form submitted with email:', email)
     setLoading(true)
     try {
+      console.log('[Login] Creating FormData...')
       const formData = new FormData()
       formData.append('username', email)
       formData.append('password', password)
+      
+      console.log('[Login] Calling api.request("/auth/token")...')
       const res = await api.request('/auth/token', { method: 'POST', body: formData })
+      
+      console.log('[Login] Response received:', res)
+      if (!res.access_token) {
+        throw new Error('No access token in response')
+      }
+      
       api.setAuthToken(res.access_token, res.refresh_token)
-      // Also store user info for later use
       localStorage.setItem('evalence_user_id', res.user_id)
       localStorage.setItem('evalence_user_role', res.role)
+      
       toast.success(`Welcome back, ${res.full_name || 'there'}!`)
+      
+      console.log('[Login] Redirecting to dashboard for role:', res.role)
       setTimeout(() => {
         if (res.role === 'mentor' || res.role === 'super_admin') navigate('/dashboard/organizer')
         else if (res.role === 'judge') navigate('/dashboard/judge')
         else navigate('/dashboard/participant')
       }, 600)
     } catch (err: any) {
-      toast.error(err.message || 'Invalid credentials. Please try again.')
+      console.error('[Login] Error:', err.message)
+      const errorMsg = err.message || 'Login failed. Please try again.'
+      toast.error(errorMsg)
     } finally {
       setLoading(false)
     }

@@ -4,12 +4,15 @@ from email.mime.multipart import MIMEMultipart
 from typing import List, Optional
 import os
 from dotenv import load_dotenv
+import threading
+import socket
 
 load_dotenv()
 
 # Email Configuration
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
+SMTP_TIMEOUT = 5  # 5 second timeout for SMTP connection
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "mejatinrajani@gmail.com")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "xdwi vbiw ckzq akzi")
 SENDER_NAME = "Evalence"
@@ -18,14 +21,14 @@ class EmailService:
     """Email service for sending transactional emails via Gmail SMTP."""
     
     @staticmethod
-    def send_email(
+    def send_email_sync(
         recipient_emails: List[str],
         subject: str,
         html_content: str,
         plain_text: Optional[str] = None
     ) -> bool:
         """
-        Send an email to one or more recipients.
+        Send an email synchronously (blocking).
         
         Args:
             recipient_emails: List of email addresses
@@ -51,16 +54,63 @@ class EmailService:
             part2 = MIMEText(html_content, "html")
             msg.attach(part2)
             
-            # Connect to Gmail SMTP and send
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            # Connect to Gmail SMTP and send with timeout
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
                 server.starttls()
                 server.login(SENDER_EMAIL, SENDER_PASSWORD)
                 server.sendmail(SENDER_EMAIL, recipient_emails, msg.as_string())
             
+            print(f"[EMAIL] Successfully sent to {recipient_emails}")
             return True
-        except Exception as e:
-            print(f"Error sending email: {str(e)}")
+        except socket.timeout:
+            print(f"[EMAIL] SMTP timeout - email not sent to {recipient_emails}")
             return False
+        except Exception as e:
+            print(f"[EMAIL] Error sending email: {str(e)}")
+            return False
+    
+    @staticmethod
+    def send_email_async(
+        recipient_emails: List[str],
+        subject: str,
+        html_content: str,
+        plain_text: Optional[str] = None
+    ) -> None:
+        """
+        Send an email asynchronously (non-blocking).
+        
+        Spawns a background thread to send email without blocking the caller.
+        """
+        def send_in_background():
+            try:
+                EmailService.send_email_sync(recipient_emails, subject, html_content, plain_text)
+            except Exception as e:
+                print(f"[EMAIL] Background send failed: {e}")
+        
+        thread = threading.Thread(target=send_in_background, daemon=True)
+        thread.start()
+    
+    @staticmethod
+    def send_email(
+        recipient_emails: List[str],
+        subject: str,
+        html_content: str,
+        plain_text: Optional[str] = None
+    ) -> bool:
+        """
+        Send an email asynchronously (non-blocking wrapper).
+        
+        Args:
+            recipient_emails: List of email addresses
+            subject: Email subject
+            html_content: HTML content of the email
+            plain_text: Plain text fallback (optional)
+        
+        Returns:
+            bool: Always returns True (fires and forgets)
+        """
+        EmailService.send_email_async(recipient_emails, subject, html_content, plain_text)
+        return True
     
     @staticmethod
     def welcome_email(recipient_email: str, full_name: str, role: str) -> bool:

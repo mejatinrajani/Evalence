@@ -54,12 +54,28 @@ export default function Register() {
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()
+    
+    // Validation
+    if (!email || !password || !name) {
+      toast.error('Please fill in all fields')
+      return
+    }
+    
+    if (password.length < 8) {
+      toast.error('Password must be at least 8 characters')
+      return
+    }
+    
+    console.log('[Register] Form submitted:', { email, name, role })
     setLoading(true)
     try {
-      await api.post('/auth/register', { email, password, full_name: name, role })
+      console.log('[Register] Calling api.post("/auth/register")...')
+      const res = await api.post('/auth/register', { email, password, full_name: name, role })
+      console.log('[Register] Success:', res)
       toast.success('Account created! Redirecting to login...')
       setTimeout(() => navigate('/auth/login'), 900)
     } catch (err: any) {
+      console.error('[Register] Error:', err.message)
       toast.error(err.message || 'Registration failed. Try again.')
     } finally {
       setLoading(false)

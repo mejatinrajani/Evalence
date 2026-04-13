@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Evalence API Debug</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: #e2e8f0; padding: 20px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { margin-bottom: 30px; color: #818cf8; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 24px; margin-bottom: 20px; }
+    .section { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+    label { display: block; margin-bottom: 8px; font-size: 12px; text-transform: uppercase; color: #94a3b8; }
+    input, textarea { width: 100%; padding: 10px; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 4px; font-family: monospace; font-size: 14px; }
+    input:focus { outline: none; border-color: #818cf8; }
+    button { background: #818cf8; color: white; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; font-weight: 600; margin-top: 10px; }
+    button:hover { background: #6366f1; }
+    button:active { transform: scale(0.98); }
+    .output { background: #0f172a; border: 1px solid #334155; padding: 16px; border-radius: 4px; max-height: 500px; overflow-y: auto; font-family: monospace; font-size: 12px; line-height: 1.6; }
+    .success { color: #10b981; }
+    .error { color: #ef4444; }
+    .info { color: #3b82f6; }
+    .warn { color: #f59e0b; }
+    .two-col { grid-template-columns: 1fr 1fr; }
+    .status { display: inline-block; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; margin-top: 10px; }
+    .status.ready { background: #10b98133; color: #10b981; }
+    .status.error { background: #ef444433; color: #ef4444; }
+    .status.pending { background: #f59e0b33; color: #f59e0b; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🚀 Evalence API Debug Dashboard</h1>
+    
+    <div class="card">
+      <h2 style="margin-bottom: 16px; color: #818cf8;">Server Status</h2>
+      <div id="status" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;">
+        <!-- Status will be populated by script -->
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-bottom: 16px; color: #818cf8;">1. Register User</h2>
+      <div class="section">
+        <div>
+          <label>Email</label>
+          <input id="regEmail" type="email" value="test@example.com" placeholder="user@example.com">
+          <label style="margin-top: 10px;">Full Name</label>
+          <input id="regName" type="text" value="Test User" placeholder="John Doe">
+          <label style="margin-top: 10px;">Role</label>
+          <select id="regRole" style="width: 100%; padding: 10px; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 4px;">
+            <option value="participant">Participant</option>
+            <option value="judge">Judge</option>
+            <option value="mentor">Mentor</option>
+          </select>
+          <label style="margin-top: 10px;">Password</label>
+          <input id="regPassword" type="password" value="TestPass123!" placeholder="••••••••••">
+          <button onclick="testRegister()">Register</button>
+        </div>
+        <div>
+          <label>Response</label>
+          <div id="regOutput" class="output">Waiting for response...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-bottom: 16px; color: #818cf8;">2. Login User</h2>
+      <div class="section">
+        <div>
+          <label>Email</label>
+          <input id="loginEmail" type="email" value="test@example.com" placeholder="user@example.com">
+          <label style="margin-top: 10px;">Password</label>
+          <input id="loginPassword" type="password" value="TestPass123!" placeholder="••••••••••">
+          <button onclick="testLogin()">Login</button>
+        </div>
+        <div>
+          <label>Response</label>
+          <div id="loginOutput" class="output">Waiting for response...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-bottom: 16px; color: #818cf8;">3. Get Current User (Requires Token)</h2>
+      <button onclick="testGetMe()">Get Current User</button>
+      <label style="margin-top: 20px;">Response</label>
+      <div id="getMeOutput" class="output">Waiting for response...</div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-bottom: 16px; color: #818cf8;">Debug Console</h2>
+      <div id="console" class="output" style="height: 300px; background: #000; color: #0f0;">
+        <!-- Logs will appear here -->
+      </div>
+      <button onclick="clearLogs()" style="margin-top: 10px;">Clear Logs</button>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = 'http://localhost:8000/api';
+    const API_KEY = 'evalence_token';
+    const logs = [];
+
+    function log(message, type = 'info') {
+      const timestamp = new Date().toLocaleTimeString();
+      const log = `[${timestamp}] ${message}`;
+      logs.push({ message: log, type });
+      updateConsole();
+      console.log(message);
+    }
+
+    function clearLogs() {
+      logs.length = 0;
+      updateConsole();
+    }
+
+    function updateConsole() {
+      const consolEl = document.getElementById('console');
+      consolEl.innerHTML = logs.map(l => `<span class="${l.type}">${l.message}</span>`).join('<br>');
+      consolEl.scrollTop = consolEl.scrollHeight;
+    }
+
+    function getToken() {
+      return localStorage.getItem(API_KEY);
+    }
+
+    function setToken(token) {
+      localStorage.setItem(API_KEY, token);
+    }
+
+    async function testServerStatus() {
+      try {
+        const response = await fetch(`${API_BASE}/../docs`);
+        log('✅ Backend reachable', 'success');
+        document.getElementById('status').innerHTML = '<div class="status ready">✅ Backend Ready</div>';
+      } catch (e) {
+        log('❌ Backend unreachable: ' + e.message, 'error');
+        document.getElementById('status').innerHTML = '<div class="status error">❌ Backend Down</div>';
+      }
+    }
+
+    async function testRegister() {
+      const email = document.getElementById('regEmail').value;
+      const name = document.getElementById('regName').value;
+      const role = document.getElementById('regRole').value;
+      const password = document.getElementById('regPassword').value;
+      const output = document.getElementById('regOutput');
+
+      log(`📤 Registering user: ${email}`, 'info');
+      output.innerHTML = '<span class="warn">Sending request...</span>';
+
+      try {
+        const response = await fetch(`${API_BASE}/auth/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, full_name: name, password, role })
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+          log(`✅ Registration successful`, 'success');
+          output.innerHTML = `<span class="success">${JSON.stringify(data, null, 2)}</span>`;
+        } else {
+          log(`❌ Registration failed: ${data.detail}`, 'error');
+          output.innerHTML = `<span class="error">${JSON.stringify(data, null, 2)}</span>`;
+        }
+      } catch (e) {
+        log(`❌ Registration error: ${e.message}`, 'error');
+        output.innerHTML = `<span class="error">Error: ${e.message}</span>`;
+      }
+    }
+
+    async function testLogin() {
+      const email = document.getElementById('loginEmail').value;
+      const password = document.getElementById('loginPassword').value;
+      const output = document.getElementById('loginOutput');
+
+      log(`📤 Logging in: ${email}`, 'info');
+      output.innerHTML = '<span class="warn">Sending request...</span>';
+
+      try {
+        const formData = new URLSearchParams();
+        formData.append('username', email);
+        formData.append('password', password);
+
+        const response = await fetch(`${API_BASE}/auth/token`, {
+          method: 'POST',
+          body: formData
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+          setToken(data.access_token);
+          log(`✅ Login successful`, 'success');
+          output.innerHTML = `<span class="success">${JSON.stringify(data, null, 2)}</span>`;
+        } else {
+          log(`❌ Login failed: ${data.detail}`, 'error');
+          output.innerHTML = `<span class="error">${JSON.stringify(data, null, 2)}</span>`;
+        }
+      } catch (e) {
+        log(`❌ Login error: ${e.message}`, 'error');
+        output.innerHTML = `<span class="error">Error: ${e.message}</span>`;
+      }
+    }
+
+    async function testGetMe() {
+      const token = getToken();
+      const output = document.getElementById('getMeOutput');
+
+      if (!token) {
+        output.innerHTML = '<span class="warn">No token found. Please login first.</span>';
+        return;
+      }
+
+      log(`📤 Fetching current user`, 'info');
+      output.innerHTML = '<span class="warn">Sending request...</span>';
+
+      try {
+        const response = await fetch(`${API_BASE}/auth/me`, {
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+          log(`✅ Fetched current user`, 'success');
+          output.innerHTML = `<span class="success">${JSON.stringify(data, null, 2)}</span>`;
+        } else {
+          log(`❌ Failed to fetch user: ${data.detail}`, 'error');
+          output.innerHTML = `<span class="error">${JSON.stringify(data, null, 2)}</span>`;
+        }
+      } catch (e) {
+        log(`❌ Error: ${e.message}`, 'error');
+        output.innerHTML = `<span class="error">Error: ${e.message}</span>`;
+      }
+    }
+
+    // Test server status on load
+    window.addEventListener('load', () => {
+      log('🚀 Debug dashboard loaded', 'info');
+      testServerStatus();
+    });
+  </script>
+</body>
+</html>
