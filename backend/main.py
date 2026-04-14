@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Query
+from fastapi import FastAPI, Depends, HTTPException, status, Query, WebSocket, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse
@@ -6,13 +6,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import timedelta, datetime
 import uvicorn
-from typing import List, Optional
+from typing import List, Optional, Dict
 import math
 import threading
 import time
 import os
 import random
 import string
+import json
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -21,6 +22,10 @@ import models
 import schemas
 import security
 from mail_service import EmailService
+from services.evaluation_service import EvaluationService
+from services.import_service import ParticipantImporter
+from services.websocket_manager import ws_manager
+from services.results_service import ResultsCalculator
 
 app = FastAPI(title="Evalence API", version="2.0.0", description="Professional Hackathon Management Platform")
 
@@ -322,7 +327,7 @@ def create_hackathon(
         db.commit()
         db.refresh(new_round)
         for criteria_data in round_data.criteria:
-            db.add(models.Criterion(name=criteria_data.name, max_points=criteria_data.max_points, round_id=new_round.id))
+            db.add(models.Criteria(name=criteria_data.name, weight=25, round_id=new_round.id))
 
     db.commit()
     
@@ -604,25 +609,31 @@ def get_judge_queue(db: Session = Depends(database.get_db), current_user: models
     for h in hackathons:
         for t in h.teams:
             for r in h.rounds:
-                for c in r.criteria:
-                    already_scored = db.query(models.Evaluation).filter(
-                        models.Evaluation.judge_id == current_user.id,
-                        models.Evaluation.team_id == t.id,
-                        models.Evaluation.criterion_id == c.id
-                    ).first()
-                    queue.append({
-                        "team_id": t.id,
-                        "team_name": t.name,
-                        "hackathon_id": h.id,
-                        "hackathon_name": h.name,
-                        "round_id": r.id,
-                        "round_name": r.name,
-                        "criterion_id": c.id,
-                        "criterion_name": c.name,
-                        "max_points": c.max_points,
-                        "already_scored": already_scored is not None,
-                        "current_score": already_scored.score if already_scored else None
-                    })
+                # Check if judge has already evaluated this team/round combo
+                existing_eval = db.query(models.Evaluation).filter(
+                    models.Evaluation.judge_id == current_user.id,
+                    models.Evaluation.team_id == t.id,
+                    models.Evaluation.round_id == r.id
+                ).first()
+                
+                queue.append({
+                    "evaluation_id": existing_eval.id if existing_eval else None,
+                    "team_id": t.id,
+                    "team_name": t.name,
+                    "hackathon_id": h.id,
+                    "hackathon_name": h.name,
+                    "round_id": r.id,
+                    "round_name": r.name,
+                    "status": existing_eval.status if existing_eval else "pending",
+                    "criteria": [
+                        {
+                            "id": c.id,
+                            "name": c.name,
+                            "description": c.description,
+                            "weight": c.weight
+                        } for c in r.criteria
+                    ]
+                })
     return queue
 
 @app.post("/api/evaluations", status_code=status.HTTP_201_CREATED, tags=["judging"])
@@ -631,54 +642,69 @@ def submit_evaluation(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(require_role("judge", "super_admin"))
 ):
-    # Upsert: allow judges to revise scores
+    # Get team, round, and hackathon info
+    team = db.query(models.Team).filter(models.Team.id == evaluation.team_id).first()
+    round_obj = db.query(models.Round).filter(models.Round.id == evaluation.round_id).first()
+    hackathon = db.query(models.Hackathon).filter(models.Hackathon.id == round_obj.hackathon_id).first() if round_obj else None
+    
+    if not team or not round_obj or not hackathon:
+        raise HTTPException(status_code=404, detail="Team, round, or hackathon not found")
+    
+    # Check for existing evaluation (upsert)
     existing = db.query(models.Evaluation).filter(
         models.Evaluation.judge_id == current_user.id,
         models.Evaluation.team_id == evaluation.team_id,
-        models.Evaluation.criterion_id == evaluation.criterion_id
+        models.Evaluation.round_id == evaluation.round_id
     ).first()
     
-    # Get team and criterion info for email
-    team = db.query(models.Team).filter(models.Team.id == evaluation.team_id).first()
-    criterion = db.query(models.Criterion).filter(models.Criterion.id == evaluation.criterion_id).first()
-    hackathon = db.query(models.Hackathon).join(models.Team).filter(models.Team.id == evaluation.team_id).first()
-    
     if existing:
-        existing.score = evaluation.score
-        db.commit()
-        # Send update email
-        if hackathon and team and criterion:
-            EmailService.score_submitted_notification(
-                current_user.email,
-                current_user.full_name,
-                team.name,
-                hackathon.name,
-                evaluation.score,
-                criterion.max_points
-            )
-        return {"message": "Score updated"}
-
-    new_eval = models.Evaluation(
-        judge_id=current_user.id,
-        team_id=evaluation.team_id,
-        criterion_id=evaluation.criterion_id,
-        score=evaluation.score
-    )
-    db.add(new_eval)
-    db.commit()
+        # Delete existing scores and update status
+        existing.status = "in_progress"
+        db.query(models.EvaluationScore).filter(models.EvaluationScore.evaluation_id == existing.id).delete()
+        eval_obj = existing
+    else:
+        # Create new evaluation
+        eval_obj = models.Evaluation(
+            judge_id=current_user.id,
+            team_id=evaluation.team_id,
+            round_id=evaluation.round_id,
+            hackathon_id=hackathon.id,
+            status="in_progress",
+            feedback=evaluation.feedback
+        )
+        db.add(eval_obj)
+        db.flush()
     
-    # Send confirmation email
-    if hackathon and team and criterion:
+    # Add scores for each criterion
+    for score_data in evaluation.scores:
+        score_obj = models.EvaluationScore(
+            evaluation_id=eval_obj.id,
+            criteria_id=score_data.criteria_id,
+            score=score_data.score,
+            comment=score_data.comment
+        )
+        db.add(score_obj)
+    
+    eval_obj.status = "completed"
+    eval_obj.feedback = evaluation.feedback
+    db.commit()
+    db.refresh(eval_obj)
+    
+    # Send completion email
+    try:
+        avg_score = sum([s.score for s in eval_obj.scores]) / len(eval_obj.scores) if eval_obj.scores else 0
         EmailService.score_submitted_notification(
             current_user.email,
             current_user.full_name,
             team.name,
             hackathon.name,
-            evaluation.score,
-            criterion.max_points
+            avg_score,
+            100
         )
+    except Exception as e:
+        print(f"Email notification failed: {e}")
     
-    return {"message": "Score submitted"}
+    return {"message": "Evaluation submitted successfully", "evaluation_id": eval_obj.id}
 
 
 # =============================================
@@ -848,25 +874,28 @@ def get_team_evaluation_details(
         round_obj = assignment.round
         project = db.query(models.Project).filter(models.Project.team_id == team.id).first()
         
-        # Get existing evaluations for this team
-        existing_evals = db.query(models.Evaluation).filter(
+        # Get existing evaluations for this team/round combo
+        existing_eval = db.query(models.Evaluation).filter(
             models.Evaluation.judge_id == current_user.id,
-            models.Evaluation.team_id == team.id
-        ).all()
-        
-        existing_evals_dict = {e.criterion_id: e for e in existing_evals}
+            models.Evaluation.team_id == team.id,
+            models.Evaluation.round_id == round_obj.id if round_obj else None
+        ).first() if round_obj else None
         
         # Build criteria list with current scores
         criteria_list = []
+        score_dict = {}
+        if existing_eval and existing_eval.scores:
+            score_dict = {s.criteria_id: s for s in existing_eval.scores}
+        
         for criterion in round_obj.criteria if round_obj else []:
-            existing_eval = existing_evals_dict.get(criterion.id)
+            existing_score = score_dict.get(criterion.id)
             criteria_list.append(schemas.CriterionEvaluationDetail(
                 criterion_id=criterion.id,
                 criterion_name=criterion.name,
-                max_points=criterion.max_points,
-                current_score=existing_eval.score if existing_eval else None,
-                feedback=existing_eval.feedback if existing_eval else None,
-                description=""
+                max_points=100,  # Now out of 100
+                current_score=existing_score.score if existing_score else None,
+                feedback=existing_score.comment if existing_score else None,
+                description=criterion.description or ""
             ))
         
         return schemas.TeamEvaluationDetailResponse(
@@ -931,55 +960,70 @@ def submit_team_evaluation(
         # Validate each score
         for criterion in round_obj.criteria:
             score = request.scores.get(criterion.id)
-            if score is None or score < 0 or score > criterion.max_points:
+            if score is None or score < 0 or score > 100:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid score for {criterion.name}: must be 0-{criterion.max_points}"
+                    detail=f"Invalid score for {criterion.name}: must be 0-100"
                 )
         
-        # Save all evaluations
+        # Save evaluation with all scores at once
+        existing_eval = db.query(models.Evaluation).filter(
+            models.Evaluation.judge_id == current_user.id,
+            models.Evaluation.team_id == request.team_id,
+            models.Evaluation.round_id == request.round_id
+        ).first()
+        
+        if existing_eval:
+            # Delete and recreate scores
+            db.query(models.EvaluationScore).filter(models.EvaluationScore.evaluation_id == existing_eval.id).delete()
+            eval_obj = existing_eval
+        else:
+            # Create new evaluation
+            eval_obj = models.Evaluation(
+                judge_id=current_user.id,
+                team_id=request.team_id,
+                round_id=request.round_id,
+                hackathon_id=round_obj.hackathon_id,
+                status="in_progress"
+            )
+            db.add(eval_obj)
+            db.flush()
+        
+        # Add all scores
         for criterion_id, score in request.scores.items():
             feedback = request.feedback.get(criterion_id) if request.feedback else None
-            
-            # Upsert evaluation
-            existing = db.query(models.Evaluation).filter(
-                models.Evaluation.judge_id == current_user.id,
-                models.Evaluation.team_id == request.team_id,
-                models.Evaluation.criterion_id == criterion_id
-            ).first()
-            
-            if existing:
-                existing.score = score
-                existing.feedback = feedback
-            else:
-                new_eval = models.Evaluation(
-                    judge_id=current_user.id,
-                    team_id=request.team_id,
-                    criterion_id=criterion_id,
-                    score=score,
-                    feedback=feedback
-                )
-                db.add(new_eval)
+            score_obj = models.EvaluationScore(
+                evaluation_id=eval_obj.id,
+                criteria_id=criterion_id,
+                score=score,
+                comment=feedback
+            )
+            db.add(score_obj)
+        
+        eval_obj.status = "completed"
+        db.commit()
         
         # Update assignment status
         assignment.status = "completed"
         assignment.completed_at = datetime.now()
-        
         db.commit()
         
         # Send confirmation email
         team = assignment.team
         hackathon = assignment.hackathon
-        total_score = sum(request.scores.values())
+        avg_score = sum(request.scores.values()) / len(request.scores) if request.scores else 0
         
-        EmailService.score_submitted_notification(
-            current_user.email,
-            current_user.full_name,
-            team.name,
-            hackathon.name,
-            total_score,
-            sum(c.max_points for c in round_obj.criteria)
-        )
+        try:
+            EmailService.score_submitted_notification(
+                current_user.email,
+                current_user.full_name,
+                team.name,
+                hackathon.name,
+                avg_score,
+                100
+            )
+        except Exception as e:
+            print(f"Email notification failed: {e}")
         
         return {"message": "Evaluation submitted successfully", "assignment_id": assignment.id}
     except HTTPException:
@@ -1020,35 +1064,47 @@ def update_evaluation(
             if not criterion:
                 raise HTTPException(status_code=400, detail=f"Invalid criterion: {criterion_id}")
             
-            if score < 0 or score > criterion.max_points:
+            if score < 0 or score > 100:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid score for {criterion.name}: must be 0-{criterion.max_points}"
+                    detail=f"Invalid score for {criterion.name}: must be 0-100"
                 )
         
-        # Update evaluations
+        # Update evaluation with all scores
+        existing_eval = db.query(models.Evaluation).filter(
+            models.Evaluation.judge_id == current_user.id,
+            models.Evaluation.team_id == assignment.team_id,
+            models.Evaluation.round_id == assignment.round_id
+        ).first()
+        
+        if existing_eval:
+            # Delete and recreate scores
+            db.query(models.EvaluationScore).filter(models.EvaluationScore.evaluation_id == existing_eval.id).delete()
+            eval_obj = existing_eval
+        else:
+            # Create new evaluation
+            eval_obj = models.Evaluation(
+                judge_id=current_user.id,
+                team_id=assignment.team_id,
+                round_id=assignment.round_id,
+                hackathon_id=assignment.hackathon_id,
+                status="in_progress"
+            )
+            db.add(eval_obj)
+            db.flush()
+        
+        # Add all scores
         for criterion_id, score in request.scores.items():
             feedback = request.feedback.get(criterion_id) if request.feedback else None
-            
-            existing = db.query(models.Evaluation).filter(
-                models.Evaluation.judge_id == current_user.id,
-                models.Evaluation.team_id == assignment.team_id,
-                models.Evaluation.criterion_id == criterion_id
-            ).first()
-            
-            if existing:
-                existing.score = score
-                existing.feedback = feedback
-            else:
-                new_eval = models.Evaluation(
-                    judge_id=current_user.id,
-                    team_id=assignment.team_id,
-                    criterion_id=criterion_id,
-                    score=score,
-                    feedback=feedback
-                )
-                db.add(new_eval)
+            score_obj = models.EvaluationScore(
+                evaluation_id=eval_obj.id,
+                criteria_id=criterion_id,
+                score=score,
+                comment=feedback
+            )
+            db.add(score_obj)
         
+        eval_obj.status = "completed"
         db.commit()
         
         return {"message": "Evaluation updated successfully"}
@@ -1723,9 +1779,9 @@ def create_criterion(
     if not round_obj:
         raise HTTPException(status_code=404, detail="Round not found")
     
-    new_criterion = models.Criterion(
+    new_criterion = models.Criteria(
         name=criterion_data.name,
-        max_points=criterion_data.max_points,
+        weight=criterion_data.weight if hasattr(criterion_data, 'weight') else 10,
         round_id=round_id
     )
     db.add(new_criterion)
@@ -1743,8 +1799,8 @@ def update_criterion(
     current_user: models.User = Depends(require_role("mentor", "super_admin"))
 ):
     """Update a criterion"""
-    criterion = db.query(models.Criterion).filter(
-        models.Criterion.id == criterion_id
+    criterion = db.query(models.Criteria).filter(
+        models.Criteria.id == criterion_id
     ).first()
     if not criterion:
         raise HTTPException(status_code=404, detail="Criterion not found")
@@ -1766,12 +1822,10 @@ def update_criterion(
     
     if criterion_data.name:
         criterion.name = criterion_data.name
-    if criterion_data.max_points is not None:
-        criterion.max_points = criterion_data.max_points
-    if criterion_data.description is not None:
-        criterion.description = criterion_data.description
     if criterion_data.weight is not None:
         criterion.weight = criterion_data.weight
+    if criterion_data.description is not None:
+        criterion.description = criterion_data.description
     
     db.commit()
     db.refresh(criterion)
@@ -1786,8 +1840,8 @@ def delete_criterion(
     current_user: models.User = Depends(require_role("mentor", "super_admin"))
 ):
     """Delete a criterion"""
-    criterion = db.query(models.Criterion).filter(
-        models.Criterion.id == criterion_id
+    criterion = db.query(models.Criteria).filter(
+        models.Criteria.id == criterion_id
     ).first()
     if not criterion:
         raise HTTPException(status_code=404, detail="Criterion not found")
@@ -2174,6 +2228,472 @@ app.add_middleware(
     expose_headers=["Content-Length", "Content-Range"],
     max_age=600,  # Cache preflight for 10 minutes
 )
+
+# =============================================
+# TEAM FEEDBACK & COMMENTS SYSTEM
+# =============================================
+
+@app.post("/api/evaluations/{evaluation_id}/feedback", status_code=status.HTTP_201_CREATED, tags=["feedback"])
+def add_evaluation_feedback(
+    evaluation_id: int,
+    feedback: schemas.EvaluationFeedbackCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("judge", "super_admin"))
+):
+    """Add detailed feedback/comments to an evaluation"""
+    eval_obj = db.query(models.Evaluation).filter(
+        models.Evaluation.id == evaluation_id,
+        models.Evaluation.judge_id == current_user.id
+    ).first()
+    if not eval_obj:
+        raise HTTPException(status_code=404, detail="Evaluation not found")
+    
+    eval_obj.detailed_feedback = feedback.feedback
+    eval_obj.suggestions = feedback.suggestions
+    db.commit()
+    db.refresh(eval_obj)
+    return {"message": "Feedback added successfully", "evaluation_id": eval_obj.id}
+
+
+@app.get("/api/teams/{team_id}/feedback", tags=["feedback"])
+def get_team_feedback(
+    team_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get all feedback for a team from all judges"""
+    team = db.query(models.Team).filter(models.Team.id == team_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    
+    evals = db.query(models.Evaluation).filter(
+        models.Evaluation.team_id == team_id
+    ).all()
+    
+    feedback_list = [
+        {
+            "judge_name": e.judge.full_name if e.judge else "Unknown",
+            "round": e.round.name if e.round else "Unknown",
+            "score": e.score,
+            "detailed_feedback": e.detailed_feedback,
+            "suggestions": e.suggestions,
+            "submitted_at": e.updated_at
+        }
+        for e in evals
+    ]
+    
+    return {"team_id": team_id, "team_name": team.name, "feedback": feedback_list}
+
+
+# =============================================
+# RESULTS EXPORT SYSTEM
+# =============================================
+
+@app.get("/api/me/hackathons/{hackathon_id}/results/export", tags=["results"])
+def export_results(
+    hackathon_id: int,
+    format: str = "json",
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("mentor", "super_admin"))
+):
+    """Export hackathon results in JSON or CSV format"""
+    h = db.query(models.Hackathon).filter(
+        models.Hackathon.id == hackathon_id,
+        models.Hackathon.mentor_id == current_user.id
+    ).first()
+    if not h:
+        raise HTTPException(status_code=404, detail="Hackathon not found or unauthorized")
+    
+    # Get teams and their scores
+    teams = db.query(models.Team).filter(models.Team.hackathon_id == hackathon_id).all()
+    results = []
+    
+    for team in teams:
+        evals = db.query(models.Evaluation).filter(models.Evaluation.team_id == team.id).all()
+        avg_score = (sum(e.score for e in evals) / len(evals)) if evals else 0
+        
+        project = db.query(models.Project).filter(models.Project.team_id == team.id).first()
+        
+        results.append({
+            "rank": 0,  # Will be set after sorting
+            "team_id": team.id,
+            "team_name": team.name,
+            "members": team.members,
+            "project_title": project.title if project else None,
+            "project_url": project.github_url if project else None,
+            "demo_url": project.demo_url if project else None,
+            "average_score": round(avg_score, 2),
+            "evaluation_count": len(evals),
+            "tech_stack": project.tech_stack if project else None
+        })
+    
+    # Sort by score
+    results.sort(key=lambda x: x["average_score"], reverse=True)
+    
+    # Add ranks
+    for idx, result in enumerate(results):
+        result["rank"] = idx + 1
+    
+    if format == "csv":
+        import csv
+        from io import StringIO
+        
+        output = StringIO()
+        writer = csv.DictWriter(output, fieldnames=["rank", "team_name", "average_score", "project_title", "members_count"])
+        writer.writeheader()
+        
+        for r in results:
+            writer.writerow({
+                "rank": r["rank"],
+                "team_name": r["team_name"],
+                "average_score": r["average_score"],
+                "project_title": r["project_title"] or "N/A",
+                "members_count": len(r["members"]) if r["members"] else 0
+            })
+        
+        return {"csv": output.getvalue()}
+    
+    return {"format": "json", "results": results, "exported_at": datetime.now().isoformat()}
+
+
+# =============================================
+# APPEAL SYSTEM
+# =============================================
+
+@app.post("/api/teams/{team_id}/appeals", status_code=status.HTTP_201_CREATED, tags=["appeals"])
+def submit_score_appeal(
+    team_id: int,
+    appeal: schemas.ScoreAppealCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Submit an appeal for score review"""
+    team = db.query(models.Team).filter(models.Team.id == team_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    
+    # Check if user is a team member (simplified check)
+    # In production, verify team membership from team.members array
+    
+    appeal_obj = models.ScoreAppeal(
+        team_id=team_id,
+        evaluation_id=appeal.evaluation_id,
+        reason=appeal.reason,
+        status="pending",
+        submitted_by=current_user.id
+    )
+    
+    db.add(appeal_obj)
+    db.commit()
+    db.refresh(appeal_obj)
+    
+    return {
+        "appeal_id": appeal_obj.id,
+        "status": "pending",
+        "message": "Appeal submitted successfully. The organizer will review it shortly.",
+        "submitted_at": appeal_obj.created_at
+    }
+
+
+@app.get("/api/me/hackathons/{hackathon_id}/appeals", response_model=List[dict], tags=["appeals"])
+def get_appeals(
+    hackathon_id: int,
+    status_filter: Optional[str] = None,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("mentor", "super_admin"))
+):
+    """Get all appeals for a hackathon"""
+    h = db.query(models.Hackathon).filter(
+        models.Hackathon.id == hackathon_id,
+        models.Hackathon.mentor_id == current_user.id
+    ).first()
+    if not h:
+        raise HTTPException(status_code=404, detail="Hackathon not found or unauthorized")
+    
+    query = db.query(models.ScoreAppeal).join(
+        models.Team, models.ScoreAppeal.team_id == models.Team.id
+    ).filter(models.Team.hackathon_id == hackathon_id)
+    
+    if status_filter:
+        query = query.filter(models.ScoreAppeal.status == status_filter)
+    
+    appeals = query.all()
+    
+    return [
+        {
+            "appeal_id": a.id,
+            "team_id": a.team_id,
+            "team_name": a.team.name,
+            "reason": a.reason,
+            "status": a.status,
+            "submitted_at": a.created_at,
+            "review_notes": a.review_notes
+        }
+        for a in appeals
+    ]
+
+
+@app.put("/api/me/appeals/{appeal_id}/review", tags=["appeals"])
+def review_appeal(
+    appeal_id: int,
+    review: schemas.AppealReviewRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("mentor", "super_admin"))
+):
+    """Review and approve/reject an appeal"""
+    appeal_obj = db.query(models.ScoreAppeal).filter(models.ScoreAppeal.id == appeal_id).first()
+    if not appeal_obj:
+        raise HTTPException(status_code=404, detail="Appeal not found")
+    
+    appeal_obj.status = review.status  # "approved" or "rejected"
+    appeal_obj.review_notes = review.review_notes
+    appeal_obj.reviewed_by = current_user.id
+    
+    db.commit()
+    db.refresh(appeal_obj)
+    
+    return {"message": f"Appeal {review.status}", "appeal_id": appeal_obj.id}
+
+
+# =============================================
+# JUDGE PERFORMANCE ANALYTICS
+# =============================================
+
+@app.get("/api/me/hackathons/{hackathon_id}/judge-performance", tags=["analytics"])
+def get_judge_performance(
+    hackathon_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("mentor", "super_admin"))
+):
+    """Get performance metrics for all judges"""
+    h = db.query(models.Hackathon).filter(
+        models.Hackathon.id == hackathon_id,
+        models.Hackathon.mentor_id == current_user.id
+    ).first()
+    if not h:
+        raise HTTPException(status_code=404, detail="Hackathon not found or unauthorized")
+    
+    # Get all judge assignments
+    assignments = db.query(models.JudgeAssignment).filter(
+        models.JudgeAssignment.hackathon_id == hackathon_id
+    ).all()
+    
+    # Group by judge
+    judge_stats = {}
+    for assignment in assignments:
+        judge_id = assignment.judge_id
+        if judge_id not in judge_stats:
+            judge_stats[judge_id] = {
+                "judge_id": judge_id,
+                "total_assigned": 0,
+                "completed": 0,
+                "in_progress": 0,
+                "pending": 0,
+                "avg_completion_time": 0,
+                "consistency_score": 0
+            }
+        
+        judge_stats[judge_id]["total_assigned"] += 1
+        
+        if assignment.status == "completed":
+            judge_stats[judge_id]["completed"] += 1
+            if assignment.started_at and assignment.completed_at:
+                duration = (assignment.completed_at - assignment.started_at).total_seconds() / 3600
+                judge_stats[judge_id]["avg_completion_time"] += duration
+        elif assignment.status == "evaluating":
+            judge_stats[judge_id]["in_progress"] += 1
+        else:
+            judge_stats[judge_id]["pending"] += 1
+    
+    # Calculate final metrics
+    for judge_id, stats in judge_stats.items():
+        if stats["completed"] > 0:
+            stats["avg_completion_time"] = stats["avg_completion_time"] / stats["completed"]
+        
+        # Get judge's evaluations for consistency
+        evals = db.query(models.Evaluation).filter(
+            models.Evaluation.judge_id == judge_id
+        ).all()
+        
+        if evals:
+            scores = [e.score for e in evals]
+            mean_score = sum(scores) / len(scores)
+            variance = sum((x - mean_score) ** 2 for x in scores) / len(scores)
+            std_dev = math.sqrt(variance)
+            
+            # Consistency score: higher is better (lower variance)
+            # Normalize to 0-100 scale
+            stats["consistency_score"] = round(max(0, 100 - (std_dev / 50 * 100)), 2)
+    
+    return {
+        "hackathon_id": hackathon_id,
+        "judges": list(judge_stats.values()),
+        "total_judges": len(judge_stats)
+    }
+
+
+# =============================================
+# REAL-TIME NOTIFICATIONS
+# =============================================
+
+@app.websocket("/ws/notifications/{user_id}")
+async def websocket_notifications(websocket: WebSocket, user_id: int):
+    """WebSocket endpoint for real-time notifications"""
+    try:
+        await websocket.accept()
+        # Add user to notification manager
+        ws_manager.connect(user_id, websocket)
+        
+        while True:
+            data = await websocket.receive_text()
+            # Echo back or handle specific commands
+            await websocket.send_json({"type": "echo", "data": data})
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+    finally:
+        ws_manager.disconnect(user_id)
+
+
+@app.post("/api/notifications/send", tags=["notifications"])
+async def send_notification(
+    notification: schemas.NotificationCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("mentor", "super_admin"))
+):
+    """Send notification to specific users"""
+    try:
+        # Broadcast to WebSocket clients
+        for user_id in notification.recipient_ids:
+            await ws_manager.broadcast(user_id, {
+                "type": "notification",
+                "title": notification.title,
+                "message": notification.message,
+                "sent_at": datetime.now().isoformat()
+            })
+        
+        return {"message": f"Notification sent to {len(notification.recipient_ids)} users"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send notification: {str(e)}")
+
+
+# =============================================
+# TEAM PROGRESS TRACKING
+# =============================================
+
+@app.get("/api/me/hackathons/{hackathon_id}/team-progress", tags=["tracking"])
+def get_team_progress(
+    hackathon_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("mentor", "super_admin"))
+):
+    """Get submission and evaluation progress for all teams"""
+    h = db.query(models.Hackathon).filter(
+        models.Hackathon.id == hackathon_id,
+        models.Hackathon.mentor_id == current_user.id
+    ).first()
+    if not h:
+        raise HTTPException(status_code=404, detail="Hackathon not found or unauthorized")
+    
+    teams = db.query(models.Team).filter(models.Team.hackathon_id == hackathon_id).all()
+    
+    progress_list = []
+    for team in teams:
+        # Check project submission
+        project = db.query(models.Project).filter(models.Project.team_id == team.id).first()
+        project_submitted = project is not None
+        
+        # Check evaluation progress
+        assignments = db.query(models.JudgeAssignment).filter(
+            models.JudgeAssignment.team_id == team.id,
+            models.JudgeAssignment.hackathon_id == hackathon_id
+        ).all()
+        
+        total_evaluations = len(assignments)
+        completed_evaluations = sum(1 for a in assignments if a.status == "completed")
+        
+        progress_list.append({
+            "team_id": team.id,
+            "team_name": team.name,
+            "members_count": len(team.members) if team.members else 0,
+            "project_submitted": project_submitted,
+            "project_title": project.title if project else None,
+            "total_judges_assigned": total_evaluations,
+            "evaluations_completed": completed_evaluations,
+            "evaluation_progress": round((completed_evaluations / total_evaluations * 100) if total_evaluations > 0 else 0, 2)
+        })
+    
+    return {
+        "hackathon_id": hackathon_id,
+        "total_teams": len(teams),
+        "teams": sorted(progress_list, key=lambda x: x["evaluation_progress"], reverse=True)
+    }
+
+
+# =============================================
+# INTELLIGENT JUDGE AUTO-ASSIGNMENT
+# =============================================
+
+@app.post("/api/me/hackathons/{hackathon_id}/auto-assign-judges", tags=["judge-assignments"])
+def auto_assign_judges(
+    hackathon_id: int,
+    config: schemas.JudgeAutoAssignConfig,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_role("mentor", "super_admin"))
+):
+    """Automatically assign judges to teams based on balanced workload"""
+    h = db.query(models.Hackathon).filter(
+        models.Hackathon.id == hackathon_id,
+        models.Hackathon.mentor_id == current_user.id
+    ).first()
+    if not h:
+        raise HTTPException(status_code=404, detail="Hackathon not found or unauthorized")
+    
+    # Get all judges and teams
+    judges = db.query(models.User).filter(models.User.role == "judge").all()
+    teams = db.query(models.Team).filter(models.Team.hackathon_id == hackathon_id).all()
+    rounds = db.query(models.Round).filter(models.Round.hackathon_id == hackathon_id).all()
+    
+    if not judges or not teams or not rounds:
+        raise HTTPException(status_code=400, detail="Not all required data available (judges, teams, rounds)")
+    
+    # Simple round-robin assignment
+    assignments_created = 0
+    for round_obj in rounds:
+        judge_workload = {judge.id: 0 for judge in judges}
+        
+        for team in teams:
+            # Find judge with least workload
+            lightest_judge_id = min(judge_workload, key=judge_workload.get)
+            
+            # Check if assignment already exists
+            existing = db.query(models.JudgeAssignment).filter(
+                models.JudgeAssignment.judge_id == lightest_judge_id,
+                models.JudgeAssignment.team_id == team.id,
+                models.JudgeAssignment.round_id == round_obj.id
+            ).first()
+            
+            if not existing:
+                new_assignment = models.JudgeAssignment(
+                    hackathon_id=hackathon_id,
+                    judge_id=lightest_judge_id,
+                    team_id=team.id,
+                    round_id=round_obj.id,
+                    status="pending"
+                )
+                db.add(new_assignment)
+                judge_workload[lightest_judge_id] += 1
+                assignments_created += 1
+    
+    db.commit()
+    
+    return {
+        "message": "Auto-assignment completed",
+        "assignments_created": assignments_created,
+        "total_judges": len(judges),
+        "total_teams": len(teams),
+        "rounds_processed": len(rounds)
+    }
+
 
 # =============================================
 # STARTUP

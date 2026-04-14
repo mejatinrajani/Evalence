@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Enum, ForeignKey, Text, JSON, Float, DateTime
+from sqlalchemy import Column, Integer, String, Enum, ForeignKey, Text, JSON, Float, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -43,6 +43,9 @@ class Hackathon(Base):
     max_teams = Column(Integer, nullable=True)
     status = Column(String, default="draft")  # draft, registration_open, evaluating, completed
     mentor_id = Column(Integer, ForeignKey("users.id"))
+    results_calculated = Column(Boolean, default=False)
+    calculated_at = Column(DateTime, nullable=True)
+    leaderboard_data = Column(JSON, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
     updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now(), nullable=True)
 
@@ -72,42 +75,93 @@ class Round(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    order = Column(Integer, nullable=True)
     hackathon_id = Column(Integer, ForeignKey("hackathons.id"))
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
     updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now(), nullable=True)
 
     hackathon = relationship("Hackathon", back_populates="rounds")
-    criteria = relationship("Criterion", back_populates="round", cascade="all, delete-orphan")
+    criteria = relationship("Criteria", back_populates="round", cascade="all, delete-orphan")
+    evaluations = relationship("Evaluation", back_populates="round", cascade="all, delete-orphan")
 
 
-class Criterion(Base):
+class Criteria(Base):
     __tablename__ = "criteria"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
-    max_points = Column(Integer, default=10)
+    description = Column(Text, nullable=True)
+    weight = Column(Float, default=10)
     round_id = Column(Integer, ForeignKey("rounds.id"))
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
     updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now(), nullable=True)
 
     round = relationship("Round", back_populates="criteria")
+    scores = relationship("EvaluationScore", back_populates="criteria", cascade="all, delete-orphan")
 
 
 class Evaluation(Base):
     __tablename__ = "evaluations"
 
     id = Column(Integer, primary_key=True, index=True)
-    score = Column(Integer, nullable=False)
+    judge_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    round_id = Column(Integer, ForeignKey("rounds.id"), nullable=False)
+    hackathon_id = Column(Integer, ForeignKey("hackathons.id"), nullable=False)
+    status = Column(String, default="pending")  # pending, in_progress, completed
     feedback = Column(Text, nullable=True)
-    judge_id = Column(Integer, ForeignKey("users.id"))
-    team_id = Column(Integer, ForeignKey("teams.id"))
-    criterion_id = Column(Integer, ForeignKey("criteria.id"))
+    detailed_feedback = Column(Text, nullable=True)
+    suggestions = Column(Text, nullable=True)
+    score = Column(Float, nullable=True)  # Overall score
+    submitted_at = Column(DateTime, nullable=True)
+    submitted_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    is_finalized = Column(Boolean, default=False)
+    finalized_at = Column(DateTime, nullable=True)
+    last_modified = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
     updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now(), nullable=True)
 
-    judge = relationship("User")
+    judge = relationship("User", foreign_keys=[judge_id])
+    submitter = relationship("User", foreign_keys=[submitted_by_id])
     team = relationship("Team")
-    criterion = relationship("Criterion")
+    round = relationship("Round", back_populates="evaluations")
+    hackathon = relationship("Hackathon")
+    scores = relationship("EvaluationScore", back_populates="evaluation", cascade="all, delete-orphan")
+    audits = relationship("EvaluationAudit", back_populates="evaluation", cascade="all, delete-orphan")
+
+
+class EvaluationScore(Base):
+    __tablename__ = "evaluation_scores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    evaluation_id = Column(Integer, ForeignKey("evaluations.id"), nullable=False)
+    criteria_id = Column(Integer, ForeignKey("criteria.id"), nullable=False)
+    score = Column(Float, nullable=False)  # 0-100
+    comment = Column(Text, nullable=True)
+    z_score = Column(Float, nullable=True)
+    normalized_score = Column(Float, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=True)
+    updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now(), nullable=True)
+
+    evaluation = relationship("Evaluation", back_populates="scores")
+    criteria = relationship("Criteria", back_populates="scores")
+
+
+class EvaluationAudit(Base):
+    __tablename__ = "evaluation_audits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    evaluation_id = Column(Integer, ForeignKey("evaluations.id"), nullable=False)
+    action = Column(String(50))  # "created", "updated", "submitted"
+    changed_by_id = Column(Integer, ForeignKey("users.id"))
+    old_values = Column(JSON, nullable=True)  # {criteria_1: 85, ...}
+    new_values = Column(JSON)  # {criteria_1: 88, ...}
+    ip_address = Column(String(45), nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    evaluation = relationship("Evaluation", back_populates="audits")
+    changed_by = relationship("User")
 
 
 class Project(Base):
@@ -148,11 +202,11 @@ class HackathonJudge(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     hackathon_id = Column(Integer, ForeignKey("hackathons.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    judge_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     assigned_at = Column(DateTime, server_default=func.now(), nullable=True)
 
     hackathon = relationship("Hackathon")
-    user = relationship("User")
+    judge = relationship("User")
 
 
 class HackathonCoordinator(Base):
@@ -237,3 +291,59 @@ class ParticipantRegistration(Base):
     hackathon = relationship("Hackathon")
     user = relationship("User")
     team = relationship("Team")
+
+
+class ScoreAppeal(Base):
+    __tablename__ = "score_appeals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    evaluation_id = Column(Integer, ForeignKey("evaluations.id"), nullable=False)
+    reason = Column(Text, nullable=False)
+    status = Column(String, default="pending")  # pending, approved, rejected, withdrawn
+    submitted_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    review_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+
+    team = relationship("Team")
+    evaluation = relationship("Evaluation")
+    submitter = relationship("User", foreign_keys=[submitted_by])
+    reviewer = relationship("User", foreign_keys=[reviewed_by])
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    type = Column(String, default="info")  # info, warning, success, error
+    read = Column(Boolean, default=False)
+    related_id = Column(Integer, nullable=True)  # hackathon_id, team_id, etc
+    related_type = Column(String, nullable=True)  # hackathon, team, evaluation, etc
+    action_url = Column(String, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=True)
+
+    user = relationship("User")
+
+
+class TeamFeedback(Base):
+    __tablename__ = "team_feedbacks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    evaluation_id = Column(Integer, ForeignKey("evaluations.id"), nullable=False)
+    judge_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    detailed_feedback = Column(Text, nullable=True)
+    suggestions = Column(Text, nullable=True)
+    is_visible_to_team = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=True)
+    updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now(), nullable=True)
+
+    evaluation = relationship("Evaluation")
+    judge = relationship("User")
+    team = relationship("Team")
+

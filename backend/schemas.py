@@ -166,10 +166,15 @@ class AnnouncementResponse(BaseModel):
 # =============================================
 # JUDGING & LEADERBOARD
 # =============================================
+class EvaluationScoreCreate(BaseModel):
+    criteria_id: int
+    score: float
+    comment: Optional[str] = None
+
 class EvaluationCreate(BaseModel):
     team_id: int
-    criterion_id: int
-    score: int
+    round_id: int
+    scores: list[EvaluationScoreCreate]
     feedback: Optional[str] = None
 
 class TeamLeaderboardResponse(BaseModel):
@@ -425,9 +430,107 @@ class EvaluationUpdateRequest(BaseModel):
     scores: Dict[int, int]  # criterion_id -> score mapping
     feedback: Optional[Dict[int, str]] = None  # criterion_id -> feedback mapping
 
+
 # =============================================
-# PARTICIPANTS
+# NEW EVALUATION SCHEMAS - MULTI-CRITERIA
 # =============================================
+class CriteriaDetailResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str]
+    weight: float
+    max_score: int = 100
+
+    class Config:
+        from_attributes = True
+
+
+class RoundEvaluationResponse(BaseModel):
+    id: int
+    team_id: int
+    team_name: str
+    round_id: int
+    round_name: str
+    criteria: List[CriteriaDetailResponse]
+    current_scores: Dict[int, float]  # {criteria_id: score}
+    status: str  # "pending", "in_progress", "completed"
+    feedback: Optional[str]
+    average_score: Optional[float]
+
+    class Config:
+        from_attributes = True
+
+
+class EvaluationSubmitFormRequest(BaseModel):
+    scores: Dict[int, float]  # {criteria_id: score}
+    feedback: Optional[str] = None
+    submit: bool = False  # True to finalize, False to save draft
+
+
+class EvaluationSubmitResponse(BaseModel):
+    status: str
+    evaluation_id: int
+    message: str
+    average_score: float
+    scores_count: int
+    timestamp: datetime
+    is_draft: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class LeaderboardTeamResponse(BaseModel):
+    rank: int
+    team_id: int
+    team_name: str
+    final_score: float
+    z_score: float
+    member_count: int
+    project_title: Optional[str]
+    evaluations_count: int
+    scores_by_evaluation: List[float]
+
+    class Config:
+        from_attributes = True
+
+
+class JudgeAssignmentsSummary(BaseModel):
+    judge_id: int
+    judge_name: str
+    teams_assigned: int
+    evaluations_completed: int
+    completion_percentage: int
+    scores_breakdown: Dict[str, Dict]  # {team_name: {avg, count}}
+
+    class Config:
+        from_attributes = True
+
+
+class ResultsCalculationResponse(BaseModel):
+    status: str
+    leaderboard: List[LeaderboardTeamResponse]
+    judge_assignments: List[JudgeAssignmentsSummary]
+    statistics: Dict
+    calculated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ImportErrorDetail(BaseModel):
+    row: int
+    field: str
+    value: str
+    error: str
+    action: str = "Fix and re-upload"
+
+
+class ParticipantImportResponse(BaseModel):
+    status: str  # success, partial, error
+    summary: Dict
+    errors: List[ImportErrorDetail] = []
+    warnings: List[Dict] = []
 class ParticipantRegistrationResponse(BaseModel):
     id: int
     user_id: int
@@ -468,4 +571,117 @@ class EventLogResponse(BaseModel):
     created_at: Optional[datetime] = None
     class Config:
         from_attributes = True
+
+
+# =============================================
+# TEAM FEEDBACK & COMMENTS
+# =============================================
+class EvaluationFeedbackCreate(BaseModel):
+    feedback: str
+    suggestions: Optional[str] = None
+
+class FeedbackResponse(BaseModel):
+    judge_name: str
+    round: str
+    score: float
+    detailed_feedback: Optional[str] = None
+    suggestions: Optional[str] = None
+    submitted_at: Optional[datetime] = None
+
+
+# =============================================
+# SCORE APPEAL/REVIEW SYSTEM
+# =============================================
+class ScoreAppealCreate(BaseModel):
+    evaluation_id: int
+    reason: str
+
+class ScoreAppealResponse(BaseModel):
+    appeal_id: int
+    status: str  # pending, approved, rejected
+    message: str
+    submitted_at: datetime
+
+class AppealReviewRequest(BaseModel):
+    status: str  # approved or rejected
+    review_notes: Optional[str] = None
+
+class AppealResponse(BaseModel):
+    appeal_id: int
+    team_id: int
+    team_name: str
+    reason: str
+    status: str
+    submitted_at: datetime
+    review_notes: Optional[str] = None
+
+
+# =============================================
+# JUDGE PERFORMANCE METRICS
+# =============================================
+class JudgePerformanceMetrics(BaseModel):
+    judge_id: int
+    total_assigned: int
+    completed: int
+    in_progress: int
+    pending: int
+    avg_completion_time: float
+    consistency_score: float
+
+class JudgePerformanceResponse(BaseModel):
+    hackathon_id: int
+    judges: List[JudgePerformanceMetrics]
+    total_judges: int
+
+
+# =============================================
+# NOTIFICATIONS
+# =============================================
+class NotificationCreate(BaseModel):
+    title: str
+    message: str
+    recipient_ids: List[int]
+
+class NotificationResponse(BaseModel):
+    id: int
+    title: str
+    message: str
+    recipient_id: int
+    read: bool = False
+    created_at: datetime
+
+
+# =============================================
+# TEAM PROGRESS TRACKING
+# =============================================
+class TeamProgressItem(BaseModel):
+    team_id: int
+    team_name: str
+    members_count: int
+    project_submitted: bool
+    project_title: Optional[str] = None
+    total_judges_assigned: int
+    evaluations_completed: int
+    evaluation_progress: float  # percentage
+
+class TeamProgressResponse(BaseModel):
+    hackathon_id: int
+    total_teams: int
+    teams: List[TeamProgressItem]
+
+
+# =============================================
+# AUTO-ASSIGN JUDGES
+# =============================================
+class JudgeAutoAssignConfig(BaseModel):
+    balanced_workload: bool = True
+    judges_per_team: int = 3
+    exclude_judge_ids: Optional[List[int]] = None
+
+class JudgeAutoAssignResponse(BaseModel):
+    message: str
+    assignments_created: int
+    total_judges: int
+    total_teams: int
+    rounds_processed: int
 
