@@ -19,6 +19,8 @@ import Leaderboard from './pages/Leaderboard'
 import EventsDiscovery from './pages/EventsDiscovery'
 // Judge Portal Components
 import { EvaluationsPage, MyRatingsPage, JudgeStatsPage } from './components/judge'
+// Phase 3 Components
+import { AIInsights, MentorshipMatching, TeamMessaging, AchievementsBadges, AdvancedReporting } from './components/phase3'
 
 export default function App() {
   return (
@@ -60,6 +62,18 @@ export default function App() {
           <Route path="/judge/evaluations" element={<EvaluationsPage />} />
           <Route path="/judge/history" element={<MyRatingsPage />} />
           <Route path="/judge/progress" element={<JudgeStatsPage />} />
+          {/* Phase 3: AI & Advanced Features Routes */}
+          <Route path="/dashboard/ai-insights" element={<AIInsights />} />
+          <Route path="/dashboard/mentorship" element={<MentorshipMatching />} />
+          <Route path="/dashboard/team-chat" element={<TeamMessaging />} />
+          <Route path="/dashboard/achievements" element={<AchievementsBadges />} />
+          <Route path="/dashboard/reports" element={<AdvancedReporting />} />
+          {/* Alternative routes for phase 3 features */}
+          <Route path="/ai-insights" element={<AIInsights />} />
+          <Route path="/mentorship" element={<MentorshipMatching />} />
+          <Route path="/team-chat" element={<TeamMessaging />} />
+          <Route path="/achievements" element={<AchievementsBadges />} />
+          <Route path="/reports" element={<AdvancedReporting />} />
         </Route>
       </Routes>
     </BrowserRouter>

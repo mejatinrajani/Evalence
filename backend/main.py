@@ -14,11 +14,26 @@ import os
 import random
 import string
 import json
+import logging
+import sys
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+# Configure Python logging - logs go to both console and file
+logging.basicConfig(
+    level=logging.WARNING,
+    format='%(levelname)-8s | %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),  # Console output
+        logging.FileHandler('backend.log', encoding='utf-8')  # File output
+    ]
+)
+logger = logging.getLogger(__name__)
+
 import database
 import models
+import models_phase2
+import models_phase3
 import schemas
 import security
 from mail_service import EmailService
@@ -26,19 +41,30 @@ from services.evaluation_service import EvaluationService
 from services.import_service import ParticipantImporter
 from services.websocket_manager import ws_manager
 from services.results_service import ResultsCalculator
+from api_phase2 import router as router_phase2
+from api_phase3 import router as router_phase3
 
 app = FastAPI(title="Evalence API", version="2.0.0", description="Professional Hackathon Management Platform")
+
+# Include routers from all phases
+app.include_router(router_phase2, prefix="/api", tags=["phase2"])
+app.include_router(router_phase3, prefix="/api", tags=["phase3"])
 
 # Create DB tables on app startup in a background thread (non-blocking)
 def init_database():
     """Initialize database tables in background to avoid blocking startup"""
     time.sleep(1)  # Brief delay to let server start
     try:
-        print("\n[INFO] Initializing database tables...")
+        # Ensure all model modules are imported so their tables are registered in metadata
+        import models
+        import models_phase2
+        import models_phase3
+        
+        # Create all tables (Phase 1, 2, 3)
         models.Base.metadata.create_all(bind=database.engine)
-        print("[OK] Database tables created/verified\n")
+        logger.info("✅ Database tables created successfully (all phases)")
     except Exception as e:
-        print(f"\n[WARN] Database error: {str(e)[:150]}\n")
+        logger.error(f"Database error: {str(e)[:150]}")
 
 @app.on_event("startup")
 def startup_event():
@@ -47,7 +73,20 @@ def startup_event():
     db_thread.start()
 
 # Setup CORS for the React Frontend (MUST be added as the LAST middleware to execute FIRST)
-# Temporarily commented - will add at end of file
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        os.getenv("FRONTEND_URL", "http://localhost:3000"),
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
 
@@ -55,22 +94,34 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
 # DEPENDENCIES
 # =============================================
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(database.get_db)):
+    """Extract and validate JWT token, return current user."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
+        # Decode JWT token
         payload = security.jwt.decode(token, security.SECRET_KEY, algorithms=[security.ALGORITHM])
         email: str = payload.get("sub")
+        
         if email is None:
             raise credentials_exception
+        
+        # Query user from database
+        user = db.query(models.User).filter(models.User.email == email).first()
+        if user is None:
+            raise credentials_exception
+        
+        return user
+        
     except security.JWTError:
         raise credentials_exception
-    user = db.query(models.User).filter(models.User.email == email).first()
-    if user is None:
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Auth error: {str(e)}")
         raise credentials_exception
-    return user
 
 def require_role(*roles):
     """RBAC: Require specific roles to access an endpoint."""
@@ -112,7 +163,7 @@ async def value_error_handler(request: Request, exc: ValueError):
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle unexpected errors."""
-    print(f"[ERR] Unhandled error: {str(exc)}")
+    logger.error(f"Unhandled error: {str(exc)}")
     return JSONResponse(
         status_code=500,
         content={
@@ -160,26 +211,17 @@ def health_check(db: Session = Depends(database.get_db)):
 def register_user(user: schemas.UserCreate, db: Session = Depends(database.get_db)):
     """Register a new user with email, password, name, and role."""
     try:
-        print(f"[REG] Starting registration for email: {user.email}")
-        
         # Validate email uniqueness
-        print(f"[REG] Checking email uniqueness...")
         db_user = db.query(models.User).filter(models.User.email == user.email).first()
         if db_user:
-            print(f"[REG] Email already exists")
             raise HTTPException(status_code=400, detail="Email already registered")
         
         # Validate password strength (minimum 8 characters)
-        print(f"[REG] Validating password strength...")
         if len(user.password) < 8:
             raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
         
-        # Hash password
-        print(f"[REG] Hashing password...")
+        # Hash password and create user
         hashed_pwd = security.get_password_hash(user.password)
-        
-        # Create new user
-        print(f"[REG] Creating user object...")
         new_user = models.User(
             email=user.email,
             hashed_password=hashed_pwd,
@@ -187,37 +229,41 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(database.get_d
             role=user.role
         )
         
-        print(f"[REG] Adding user to database...")
         db.add(new_user)
         db.commit()
-        print(f"[REG] Committed to database")
-        
         db.refresh(new_user)
-        print(f"[REG] Refreshed user object")
         
         # Send welcome email in background to avoid blocking
-        print(f"[REG] Sending welcome email (async)...")
         try:
             EmailService.welcome_email(new_user.email, new_user.full_name, new_user.role)
         except Exception as e:
-            print(f"[WARN] Welcome email failed: {str(e)}")
             # Don't fail registration if email fails
+            pass
         
-        print(f"[REG] Registration successful for {user.email}")
         return new_user
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        print(f"[ERR] Registration error: {str(e)}")
+        logger.error(f"Registration error: {str(e)}")
         raise HTTPException(status_code=500, detail="Registration failed. Please try again.")
 
 @app.post("/api/auth/token", tags=["auth"])
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
     """Login user and return access and refresh tokens."""
     try:
+        # Query user by email (OAuth2PasswordRequestForm uses 'username' field)
         user = db.query(models.User).filter(models.User.email == form_data.username).first()
-        if not user or not security.verify_password(form_data.password, user.hashed_password):
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Verify password
+        if not security.verify_password(form_data.password, user.hashed_password):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password",
@@ -239,11 +285,12 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
             "full_name": user.full_name,
             "user_id": user.id
         }
+        
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[ERR] Login error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Login error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Login failed. Please try again.")
 
 @app.get("/api/auth/me", response_model=schemas.UserResponse, tags=["auth"])
 def get_me(current_user: models.User = Depends(get_current_user)):
@@ -281,7 +328,7 @@ def refresh_access_token(request_body: dict = None, token: str = None):
     except security.JWTError:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
     except Exception as e:
-        print(f"[ERR] Token refresh error: {str(e)}")
+        logger.error(f"Token refresh error: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.put("/api/auth/me", response_model=schemas.UserResponse, tags=["auth"])
@@ -604,9 +651,17 @@ def get_announcements(hackathon_id: int, db: Session = Depends(database.get_db),
 # =============================================
 @app.get("/api/judge/queue", tags=["judging"])
 def get_judge_queue(db: Session = Depends(database.get_db), current_user: models.User = Depends(require_role("judge", "super_admin"))):
-    hackathons = db.query(models.Hackathon).all()
+    """Get all teams available for judge to evaluate with criteria from database."""
+    # Get hackathons where judge is assigned
+    judge_hackathons = db.query(models.Hackathon).join(
+        models.HackathonJudge,
+        models.Hackathon.id == models.HackathonJudge.hackathon_id
+    ).filter(
+        models.HackathonJudge.judge_id == current_user.id
+    ).all()
+    
     queue = []
-    for h in hackathons:
+    for h in judge_hackathons:
         for t in h.teams:
             for r in h.rounds:
                 # Check if judge has already evaluated this team/round combo
@@ -615,6 +670,26 @@ def get_judge_queue(db: Session = Depends(database.get_db), current_user: models
                     models.Evaluation.team_id == t.id,
                     models.Evaluation.round_id == r.id
                 ).first()
+                
+                # Build criteria list with full details
+                criteria_list = []
+                score_dict = {}
+                if existing_eval and existing_eval.scores:
+                    score_dict = {s.criteria_id: s for s in existing_eval.scores}
+                
+                for c in r.criteria:
+                    existing_score = score_dict.get(c.id)
+                    criteria_list.append({
+                        "id": c.id,
+                        "criterion_id": c.id,
+                        "name": c.name,
+                        "criterion_name": c.name,
+                        "description": c.description or "",
+                        "weight": c.weight,
+                        "max_points": 100,
+                        "current_score": existing_score.score if existing_score else None,
+                        "feedback": existing_score.comment if existing_score else None
+                    })
                 
                 queue.append({
                     "evaluation_id": existing_eval.id if existing_eval else None,
@@ -625,14 +700,7 @@ def get_judge_queue(db: Session = Depends(database.get_db), current_user: models
                     "round_id": r.id,
                     "round_name": r.name,
                     "status": existing_eval.status if existing_eval else "pending",
-                    "criteria": [
-                        {
-                            "id": c.id,
-                            "name": c.name,
-                            "description": c.description,
-                            "weight": c.weight
-                        } for c in r.criteria
-                    ]
+                    "criteria": criteria_list
                 })
     return queue
 
@@ -702,7 +770,7 @@ def submit_evaluation(
             100
         )
     except Exception as e:
-        print(f"Email notification failed: {e}")
+        logger.error(f"Email notification failed: {e}")
     
     return {"message": "Evaluation submitted successfully", "evaluation_id": eval_obj.id}
 
@@ -856,23 +924,50 @@ def get_assigned_teams(
 @app.get("/api/judge/evaluations/assigned/{assignment_id}", response_model=schemas.TeamEvaluationDetailResponse, tags=["judge-portal"])
 def get_team_evaluation_details(
     assignment_id: int,
+    team_id: Optional[int] = None,
+    round_id: Optional[int] = None,
+    hackathon_id: Optional[int] = None,
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(require_role("judge", "super_admin"))
 ):
-    """Get detailed information for evaluating a specific team."""
+    """Get detailed information for evaluating a specific team with all criteria from the database."""
     try:
+        team = None
+        round_obj = None
+        hackathon = None
+        project = None
+        
+        # First try to fetch from JudgeAssignment
         assignment = db.query(models.JudgeAssignment).filter(
             models.JudgeAssignment.id == assignment_id,
             models.JudgeAssignment.judge_id == current_user.id
         ).first()
         
-        if not assignment:
+        if assignment:
+            team = assignment.team
+            hackathon = assignment.hackathon
+            round_obj = assignment.round
+            project = db.query(models.Project).filter(models.Project.team_id == team.id).first()
+        elif team_id and round_id and hackathon_id:
+            # Fallback: use query parameters to fetch team/round/hackathon
+            # Verify judge is assigned to this hackathon
+            judge_hackathon = db.query(models.HackathonJudge).filter(
+                models.HackathonJudge.judge_id == current_user.id,
+                models.HackathonJudge.hackathon_id == hackathon_id
+            ).first()
+            
+            if not judge_hackathon:
+                raise HTTPException(status_code=403, detail="Not assigned to this hackathon")
+            
+            team = db.query(models.Team).filter(models.Team.id == team_id).first()
+            hackathon = db.query(models.Hackathon).filter(models.Hackathon.id == hackathon_id).first()
+            round_obj = db.query(models.Round).filter(models.Round.id == round_id).first()
+            project = db.query(models.Project).filter(models.Project.team_id == team_id).first()
+            
+            if not (team and hackathon and round_obj):
+                raise HTTPException(status_code=404, detail="Team, hackathon, or round not found")
+        else:
             raise HTTPException(status_code=404, detail="Assignment not found or access denied")
-        
-        team = assignment.team
-        hackathon = assignment.hackathon
-        round_obj = assignment.round
-        project = db.query(models.Project).filter(models.Project.team_id == team.id).first()
         
         # Get existing evaluations for this team/round combo
         existing_eval = db.query(models.Evaluation).filter(
@@ -881,25 +976,26 @@ def get_team_evaluation_details(
             models.Evaluation.round_id == round_obj.id if round_obj else None
         ).first() if round_obj else None
         
-        # Build criteria list with current scores
+        # Build criteria list with current scores FROM DATABASE
         criteria_list = []
         score_dict = {}
         if existing_eval and existing_eval.scores:
             score_dict = {s.criteria_id: s for s in existing_eval.scores}
         
-        for criterion in round_obj.criteria if round_obj else []:
-            existing_score = score_dict.get(criterion.id)
-            criteria_list.append(schemas.CriterionEvaluationDetail(
-                criterion_id=criterion.id,
-                criterion_name=criterion.name,
-                max_points=100,  # Now out of 100
-                current_score=existing_score.score if existing_score else None,
-                feedback=existing_score.comment if existing_score else None,
-                description=criterion.description or ""
-            ))
+        if round_obj:
+            for criterion in round_obj.criteria:
+                existing_score = score_dict.get(criterion.id)
+                criteria_list.append(schemas.CriterionEvaluationDetail(
+                    criterion_id=criterion.id,
+                    criterion_name=criterion.name,
+                    max_points=100,  # Scores out of 100
+                    current_score=existing_score.score if existing_score else None,
+                    feedback=existing_score.comment if existing_score else None,
+                    description=criterion.description or ""
+                ))
         
         return schemas.TeamEvaluationDetailResponse(
-            assignment_id=assignment.id,
+            assignment_id=assignment_id if assignment else (assignment_id or 0),
             team_id=team.id,
             team_name=team.name,
             hackathon_id=hackathon.id,
@@ -913,14 +1009,15 @@ def get_team_evaluation_details(
             tech_stack=project.tech_stack if project else None,
             members=team.members if hasattr(team, 'members') and team.members else [],
             criteria=criteria_list,
-            status=assignment.status,
-            assigned_at=assignment.assigned_at,
-            started_at=assignment.started_at,
-            completed_at=assignment.completed_at
+            status=assignment.status if assignment else "pending",
+            assigned_at=assignment.assigned_at if assignment else None,
+            started_at=assignment.started_at if assignment else None,
+            completed_at=assignment.completed_at if assignment else None
         )
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to fetch evaluation details: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch evaluation details: {str(e)}")
 
 
@@ -1023,7 +1120,7 @@ def submit_team_evaluation(
                 100
             )
         except Exception as e:
-            print(f"Email notification failed: {e}")
+            logger.error(f"Email notification failed: {e}")
         
         return {"message": "Evaluation submitted successfully", "assignment_id": assignment.id}
     except HTTPException:
@@ -2195,39 +2292,59 @@ def export_participants_csv(
 
 
 # =============================================
-# CORS MIDDLEWARE - Add LAST so it executes FIRST
+# MIDDLEWARE SETUP - CORS & LOGGING
 # =============================================
 class LoggingMiddleware(BaseHTTPMiddleware):
+    """Log only successful routes (ok) and errors."""
     async def dispatch(self, request: Request, call_next):
-        print(f"[REQ] {request.method} {request.url.path} - Origin: {request.headers.get('origin', 'NONE')}")
-        response = await call_next(request)
-        return response
+        method = request.method
+        path = request.url.path
+        
+        try:
+            response = await call_next(request)
+            # Log successful responses (status < 400) as 'ok'
+            if response.status_code < 400:
+                print(f"ok | {method} {path}")
+            else:
+                # Log client/server errors with status code
+                print(f"error | {method} {path} (Status: {response.status_code})")
+            return response
+        except Exception as e:
+            # Log errors
+            logger.error(f"Route error: {method} {path} - {type(e).__name__}: {str(e)}")
+            raise
 
-app.add_middleware(LoggingMiddleware)
+# Add middleware in correct order (FIFO for registration, LIFO for execution)
+# This ensures CORS headers are set first, then logging middleware sees everything
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173", 
+        "http://localhost:5173",      # Vite default
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
-        "http://localhost:3000",
+        "http://localhost:3000",      # Common dev port
         "http://127.0.0.1:3000",
-        # Add production URLs here when ready
+        "http://localhost:8080",      # Fallback
+        "http://127.0.0.1:8080",
+        # Add production URLs here when deployed
         # "https://evalence.example.com",
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=[
+    allow_methods=["*"],  # Allow all methods including OPTIONS preflight
+    allow_headers=["*"],  # Allow all headers
+    expose_headers=[
         "Content-Type",
-        "Authorization",
-        "Accept",
-        "Origin",
-        "Access-Control-Allow-Headers"
+        "Content-Length",
+        "Content-Range",
+        "X-Total-Count",
+        "X-Page-Number",
     ],
-    expose_headers=["Content-Length", "Content-Range"],
-    max_age=600,  # Cache preflight for 10 minutes
+    max_age=3600,  # Cache CORS preflight for 1 hour
 )
+
+# Add logging middleware LAST so it wraps everything (executes first in the chain)
+app.add_middleware(LoggingMiddleware)
 
 # =============================================
 # TEAM FEEDBACK & COMMENTS SYSTEM
@@ -2549,7 +2666,7 @@ async def websocket_notifications(websocket: WebSocket, user_id: int):
             # Echo back or handle specific commands
             await websocket.send_json({"type": "echo", "data": data})
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        logger.error(f"WebSocket error: {e}")
     finally:
         ws_manager.disconnect(user_id)
 
@@ -2693,6 +2810,374 @@ def auto_assign_judges(
         "total_teams": len(teams),
         "rounds_processed": len(rounds)
     }
+
+
+# =============================================
+# PHASE 1: TEAM SUBMISSION PORTAL
+# =============================================
+
+@app.get("/api/projects/my-submission", tags=["team-submission"])
+def get_team_submission(
+    hackathon_id: int,
+    current_user: models.User = Depends(require_role("participant")),
+    db: Session = Depends(database.get_db)
+):
+    """Get team's project submission for a hackathon"""
+    try:
+        # Find team for current user
+        team_reg = db.query(models.ParticipantRegistration).filter(
+            and_(
+                models.ParticipantRegistration.user_id == current_user.id,
+                models.ParticipantRegistration.hackathon_id == hackathon_id
+            )
+        ).first()
+        
+        if not team_reg or not team_reg.team_id:
+            raise HTTPException(status_code=404, detail="Team not found for this user")
+        
+        project = db.query(models.Project).filter(
+            and_(
+                models.Project.hackathon_id == hackathon_id,
+                models.Project.team_id == team_reg.team_id
+            )
+        ).first()
+        
+        if not project:
+            # Create empty draft
+            project = models.Project(
+                team_id=team_reg.team_id,
+                hackathon_id=hackathon_id,
+                title="Untitled Project",
+                submission_status="draft"
+            )
+            db.add(project)
+            db.commit()
+        
+        return {
+            "id": project.id,
+            "team_id": project.team_id,
+            "hackathon_id": project.hackathon_id,
+            "project_name": project.title,
+            "description": project.description,
+            "demo_url": project.demo_url,
+            "github_url": project.github_url,
+            "presentation_slide_url": project.presentation_slide_url,
+            "tech_stack": project.tech_stack,
+            "project_video_url": project.project_video_url,
+            "submission_status": project.submission_status,
+            "submitted_at": project.submitted_at,
+            "created_at": project.created_at,
+            "updated_at": project.updated_at
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving submission: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/projects/submit", status_code=status.HTTP_201_CREATED, tags=["team-submission"])
+def submit_project(
+    request: schemas.ProjectSubmissionRequest,
+    current_user: models.User = Depends(require_role("participant")),
+    db: Session = Depends(database.get_db)
+):
+    """Submit or update project for evaluation"""
+    try:
+        # Find team for current user
+        team_reg = db.query(models.ParticipantRegistration).filter(
+            and_(
+                models.ParticipantRegistration.user_id == current_user.id,
+                models.ParticipantRegistration.hackathon_id == request.hackathon_id
+            )
+        ).first()
+        
+        if not team_reg or not team_reg.team_id:
+            raise HTTPException(status_code=403, detail="You are not a member of any team in this hackathon")
+        
+        # Get or create project
+        project = db.query(models.Project).filter(
+            and_(
+                models.Project.hackathon_id == request.hackathon_id,
+                models.Project.team_id == team_reg.team_id
+            )
+        ).first()
+        
+        if not project:
+            project = models.Project(
+                team_id=team_reg.team_id,
+                hackathon_id=request.hackathon_id,
+                title="Untitled Project"
+            )
+            db.add(project)
+        
+        # Update fields
+        project.title = request.project_name or project.title
+        project.description = request.description or project.description
+        project.demo_url = request.demo_url or project.demo_url
+        project.github_url = request.github_url or project.github_url
+        project.presentation_slide_url = request.presentation_slide_url or project.presentation_slide_url
+        project.project_video_url = request.project_video_url or project.project_video_url
+        project.tech_stack = request.tech_stack or project.tech_stack
+        project.submission_status = "submitted"
+        project.submitted_at = datetime.utcnow()
+        
+        db.commit()
+        
+        # Log submission
+        log_entry = models.ProjectSubmissionLog(
+            project_id=project.id,
+            action="submitted",
+            submitted_by_id=current_user.id,
+            notes="Team submitted project for evaluation"
+        )
+        db.add(log_entry)
+        db.commit()
+        
+        logger.info(f"Project {project.id} submitted by user {current_user.id}")
+        
+        return {
+            "id": project.id,
+            "team_id": project.team_id,
+            "hackathon_id": project.hackathon_id,
+            "project_name": project.title,
+            "description": project.description,
+            "demo_url": project.demo_url,
+            "github_url": project.github_url,
+            "presentation_slide_url": project.presentation_slide_url,
+            "tech_stack": project.tech_stack,
+            "project_video_url": project.project_video_url,
+            "submission_status": project.submission_status,
+            "submitted_at": project.submitted_at,
+            "created_at": project.created_at,
+            "updated_at": project.updated_at
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error submitting project: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================
+# PHASE 1: JUDGE ASSIGNMENT
+# =============================================
+
+@app.get("/api/organizer/hackathons/{hackathon_id}/assignment-status", tags=["judge-assignment"])
+def get_assignment_status(
+    hackathon_id: int,
+    current_user: models.User = Depends(require_role("mentor", "super_admin")),
+    db: Session = Depends(database.get_db)
+):
+    """Get overview of judge assignments"""
+    try:
+        hackathon = db.query(models.Hackathon).filter(models.Hackathon.id == hackathon_id).first()
+        if not hackathon:
+            raise HTTPException(status_code=404, detail="Hackathon not found")
+        
+        total_judges = db.query(func.count(models.JudgeAssignment.judge_id.distinct())).filter(
+            models.JudgeAssignment.hackathon_id == hackathon_id
+        ).scalar() or 0
+        
+        total_teams = db.query(func.count(models.Team.id)).filter(
+            models.Team.hackathon_id == hackathon_id
+        ).scalar() or 0
+        
+        assigned_teams = db.query(func.count(models.Team.id.distinct())).join(
+            models.JudgeAssignment, models.JudgeAssignment.team_id == models.Team.id
+        ).filter(
+            models.Team.hackathon_id == hackathon_id,
+            models.JudgeAssignment.hackathon_id == hackathon_id
+        ).scalar() or 0
+        
+        conflicts = db.query(func.count(models.ConflictOfInterest.id)).filter(
+            models.ConflictOfInterest.hackathon_id == hackathon_id
+        ).scalar() or 0
+        
+        return {
+            "total_judges": total_judges,
+            "assigned_judges": total_judges,
+            "unassigned_judges": 0,
+            "total_teams": total_teams,
+            "assigned_teams": assigned_teams,
+            "unassigned_teams": total_teams - assigned_teams,
+            "conflicts_detected": conflicts,
+            "workload_imbalance": False
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting assignment status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================
+# PHASE 1: ORGANIZER DASHBOARD
+# =============================================
+
+@app.get("/api/organizer/hackathons/{hackathon_id}/evaluation-progress", tags=["organizer-dashboard"])
+def get_evaluation_progress(
+    hackathon_id: int,
+    current_user: models.User = Depends(require_role("mentor", "super_admin")),
+    db: Session = Depends(database.get_db)
+):
+    """Get evaluation progress by round"""
+    try:
+        rounds = db.query(models.Round).filter(models.Round.hackathon_id == hackathon_id).all()
+        
+        progress = []
+        for round_obj in rounds:
+            total_teams = db.query(func.count(models.Team.id)).filter(
+                models.Team.hackathon_id == hackathon_id
+            ).scalar() or 1
+            
+            completed = db.query(func.count(models.Evaluation.id.distinct())).filter(
+                and_(
+                    models.Evaluation.round_id == round_obj.id,
+                    models.Evaluation.status == "completed"
+                )
+            ).scalar() or 0
+            
+            in_progress = db.query(func.count(models.Evaluation.id.distinct())).filter(
+                and_(
+                    models.Evaluation.round_id == round_obj.id,
+                    models.Evaluation.status == "in_progress"
+                )
+            ).scalar() or 0
+            
+            avg_score = db.query(func.avg(models.Evaluation.score)).filter(
+                and_(
+                    models.Evaluation.round_id == round_obj.id,
+                    models.Evaluation.status == "completed"
+                )
+            ).scalar()
+            
+            progress.append({
+                "round_id": round_obj.id,
+                "round_name": round_obj.name,
+                "total_teams": total_teams,
+                "completed": completed,
+                "in_progress": in_progress,
+                "pending": total_teams - completed - in_progress,
+                "completion_percent": round(100.0 * completed / total_teams, 2) if total_teams > 0 else 0,
+                "avg_score": float(avg_score) if avg_score else None
+            })
+        
+        return progress
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting evaluation progress: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================
+# PHASE 1: RESULTS & LEADERBOARD
+# =============================================
+
+@app.get("/api/results/leaderboard", tags=["results"])
+def get_leaderboard(
+    hackathon_id: int,
+    db: Session = Depends(database.get_db)
+):
+    """Get public leaderboard"""
+    try:
+        hackathon = db.query(models.Hackathon).filter(models.Hackathon.id == hackathon_id).first()
+        if not hackathon:
+            raise HTTPException(status_code=404, detail="Hackathon not found")
+        
+        if hackathon.status != "completed" and hackathon.status != "results":
+            raise HTTPException(status_code=400, detail="Results not yet published")
+        
+        # Get teams with their scores
+        teams_with_scores = db.query(
+            models.Team.id,
+            models.Team.name,
+            func.avg(models.EvaluationScore.score).label("avg_score"),
+            func.count(models.Evaluation.id.distinct()).label("evaluation_count")
+        ).join(
+            models.Evaluation, models.Evaluation.team_id == models.Team.id
+        ).outerjoin(
+            models.EvaluationScore, models.EvaluationScore.evaluation_id == models.Evaluation.id
+        ).filter(
+            models.Team.hackathon_id == hackathon_id,
+            models.Evaluation.status == "completed"
+        ).group_by(
+            models.Team.id, models.Team.name
+        ).order_by(
+            func.avg(models.EvaluationScore.score).desc()
+        ).all()
+        
+        leaderboard = []
+        for rank, (team_id, team_name, avg_score, eval_count) in enumerate(teams_with_scores, 1):
+            badge = None
+            if rank == 1:
+                badge = "gold"
+            elif rank == 2:
+                badge = "silver"
+            elif rank == 3:
+                badge = "bronze"
+            
+            leaderboard.append({
+                "rank": rank,
+                "team_id": team_id,
+                "team_name": team_name,
+                "final_score": float(avg_score or 0),
+                "avg_score": float(avg_score or 0),
+                "evaluations_received": eval_count or 0,
+                "badge": badge
+            })
+        
+        return {
+            "hackathon_id": hackathon_id,
+            "hackathon_name": hackathon.name,
+            "published_at": datetime.utcnow(),
+            "entries": leaderboard,
+            "total_teams": len(leaderboard),
+            "last_updated": datetime.utcnow()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting leaderboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/organizer/hackathons/{hackathon_id}/publish-results", tags=["results"])
+def publish_results(
+    hackathon_id: int,
+    current_user: models.User = Depends(require_role("mentor", "super_admin")),
+    db: Session = Depends(database.get_db)
+):
+    """Publish final results"""
+    try:
+        hackathon = db.query(models.Hackathon).filter(
+            and_(
+                models.Hackathon.id == hackathon_id,
+                models.Hackathon.mentor_id == current_user.id
+            )
+        ).first()
+        
+        if not hackathon:
+            raise HTTPException(status_code=404, detail="Hackathon not found or unauthorized")
+        
+        hackathon.status = "results"
+        db.commit()
+        
+        teams_count = db.query(models.Team).filter(models.Team.hackathon_id == hackathon_id).count()
+        
+        logger.info(f"Results published for hackathon {hackathon_id}")
+        return {
+            "status": "published",
+            "published_at": datetime.utcnow(),
+            "team_count": teams_count,
+            "hackathon_id": hackathon_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error publishing results: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================

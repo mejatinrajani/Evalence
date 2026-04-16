@@ -43,9 +43,6 @@ class Hackathon(Base):
     max_teams = Column(Integer, nullable=True)
     status = Column(String, default="draft")  # draft, registration_open, evaluating, completed
     mentor_id = Column(Integer, ForeignKey("users.id"))
-    results_calculated = Column(Boolean, default=False)
-    calculated_at = Column(DateTime, nullable=True)
-    leaderboard_data = Column(JSON, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
     updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now(), nullable=True)
 
@@ -173,6 +170,10 @@ class Project(Base):
     github_url = Column(String, nullable=True)
     demo_url = Column(String, nullable=True)
     tech_stack = Column(JSON, nullable=True)  # ["React", "FastAPI"]
+    presentation_slide_url = Column(String, nullable=True)
+    project_video_url = Column(String, nullable=True)
+    submission_status = Column(String, default="draft")  # draft, submitted, withdrawn
+    submitted_at = Column(DateTime, nullable=True)
     team_id = Column(Integer, ForeignKey("teams.id"), unique=True)
     hackathon_id = Column(Integer, ForeignKey("hackathons.id"))
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
@@ -180,6 +181,39 @@ class Project(Base):
 
     team = relationship("Team", back_populates="project")
     hackathon = relationship("Hackathon", back_populates="projects")
+    submission_logs = relationship("ProjectSubmissionLog", back_populates="project", cascade="all, delete-orphan")
+
+
+class ProjectSubmissionLog(Base):
+    __tablename__ = "project_submission_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    action = Column(String(100), nullable=False)  # submitted, updated, withdrawn, draft_saved
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    submitted_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=True)
+
+    project = relationship("Project", back_populates="submission_logs")
+    submitted_by = relationship("User")
+
+
+class ConflictOfInterest(Base):
+    __tablename__ = "conflicts_of_interest"
+
+    id = Column(Integer, primary_key=True, index=True)
+    judge_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    hackathon_id = Column(Integer, ForeignKey("hackathons.id"), nullable=False)
+    reason = Column(String(255), nullable=False)  # team_member, advisor, previous_team, other
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    judge = relationship("User", foreign_keys=[judge_id])
+    team = relationship("Team")
+    hackathon = relationship("Hackathon")
+    created_by = relationship("User", foreign_keys=[created_by_id])
 
 
 class Announcement(Base):
@@ -190,6 +224,9 @@ class Announcement(Base):
     body = Column(Text, nullable=False)
     hackathon_id = Column(Integer, ForeignKey("hackathons.id"))
     author_id = Column(Integer, ForeignKey("users.id"))
+    target_role = Column(String, default="all")  # judge, team, organizer, all
+    scheduled_time = Column(DateTime, nullable=True)
+    published_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
     updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now(), nullable=True)
 
@@ -299,8 +336,25 @@ class ScoreAppeal(Base):
     id = Column(Integer, primary_key=True, index=True)
     team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
     evaluation_id = Column(Integer, ForeignKey("evaluations.id"), nullable=False)
-    reason = Column(Text, nullable=False)
-    status = Column(String, default="pending")  # pending, approved, rejected, withdrawn
+    criterion_id = Column(Integer, ForeignKey("criteria.id"), nullable=True)
+    reason = Column(String(255), nullable=False)  # incorrect_scoring, missing_evaluation, other
+    description = Column(Text, nullable=False)
+    evidence_url = Column(String(500), nullable=True)
+    
+    status = Column(String, default="pending")  # pending, in_review, approved, rejected
+    submitted_at = Column(DateTime, default=datetime.utcnow)
+    reviewed_at = Column(DateTime, nullable=True)
+    reviewed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    review_notes = Column(Text, nullable=True)
+    resolution = Column(String(100), nullable=True)  # score_adjusted, re_evaluated, no_change
+    
+    created_at = Column(DateTime, server_default=func.now(), nullable=True)
+    updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now(), nullable=True)
+
+    team = relationship("Team")
+    evaluation = relationship("Evaluation")
+    criterion = relationship("Criteria")
+    reviewed_by = relationship("User")
     submitted_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     review_notes = Column(Text, nullable=True)

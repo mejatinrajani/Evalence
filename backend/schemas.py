@@ -398,6 +398,265 @@ class JudgeDashboardResponse(BaseModel):
     pending: int
     in_progress: int
     completion_percentage: float
+
+
+# =============================================
+# PHASE 1: TEAM SUBMISSION PORTAL
+# =============================================
+class ProjectSubmissionRequest(BaseModel):
+    project_name: Optional[str] = None
+    description: Optional[str] = None
+    demo_url: Optional[str] = None
+    github_url: Optional[str] = None
+    presentation_slide_url: Optional[str] = None
+    tech_stack: Optional[List[str]] = None
+    project_video_url: Optional[str] = None
+    hackathon_id: int
+
+class ProjectUpdateRequest(BaseModel):
+    project_name: Optional[str] = None
+    description: Optional[str] = None
+    demo_url: Optional[str] = None
+    github_url: Optional[str] = None
+    presentation_slide_url: Optional[str] = None
+    tech_stack: Optional[List[str]] = None
+    project_video_url: Optional[str] = None
+
+class ProjectSubmissionResponse(BaseModel):
+    id: int
+    team_id: int
+    hackathon_id: int
+    project_name: Optional[str] = None
+    description: Optional[str] = None
+    demo_url: Optional[str] = None
+    github_url: Optional[str] = None
+    presentation_slide_url: Optional[str] = None
+    tech_stack: Optional[List[str]] = None
+    project_video_url: Optional[str] = None
+    submission_status: str
+    submitted_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
+
+class ProjectSubmissionLogResponse(BaseModel):
+    id: int
+    project_id: int
+    action: str
+    timestamp: datetime
+    submitted_by_id: int
+    notes: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+
+# =============================================
+# PHASE 1: JUDGE ASSIGNMENT
+# =============================================
+class AssignJudgeRequest(BaseModel):
+    judge_id: int
+    team_id: int
+    round_id: int
+    hackathon_id: int
+
+class BatchAssignRequest(BaseModel):
+    hackathon_id: int
+    round_id: int
+    csv_data: Optional[str] = None
+    auto_balance: Optional[bool] = False
+    judges_per_team: Optional[int] = 3
+
+class ConflictRequest(BaseModel):
+    judge_id: int
+    team_id: int
+    hackathon_id: int
+    reason: str  # team_member, advisor, previous_team, other
+
+class ConflictResponse(BaseModel):
+    id: int
+    judge_id: int
+    judge_name: str
+    team_id: int
+    team_name: str
+    reason: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class WorkloadValidationRequest(BaseModel):
+    proposed_assignments: List[Dict[str, int]]  # [{ "judge_id": 1, "count": 5 }]
+
+class WorkloadValidationResponse(BaseModel):
+    balanced: bool
+    details: List[Dict[str, Any]]
+    average_load: float
+    min_load: int
+    max_load: int
+
+class AssignmentStatusResponse(BaseModel):
+    total_judges: int
+    assigned_judges: int
+    unassigned_judges: int
+    total_teams: int
+    assigned_teams: int
+    unassigned_teams: int
+    conflicts_detected: int
+    workload_imbalance: bool
+
+
+# =============================================
+# PHASE 1: ORGANIZER DASHBOARD
+# =============================================
+class EvaluationProgressResponse(BaseModel):
+    round_id: int
+    round_name: str
+    total_teams: int
+    completed: int
+    in_progress: int
+    pending: int
+    completion_percent: float
+    avg_score: Optional[float] = None
+    estimated_finish_time: Optional[str] = None
+
+class JudgePerformanceResponse(BaseModel):
+    judge_id: int
+    judge_name: str
+    assigned_count: int
+    completed_count: int
+    avg_score: Optional[float] = None
+    avg_time_per_eval: Optional[float] = None
+    score_std_dev: Optional[float] = None
+    last_activity: Optional[datetime] = None
+
+class BottlenecksResponse(BaseModel):
+    idle_judges: List[Dict[str, Any]] = []
+    slow_judges: List[Dict[str, Any]] = []
+    unassigned_teams: int
+    stalled_evaluations: int
+
+class EventStatusResponse(BaseModel):
+    current_phase: str  # registration, submission, judging, results, closed
+    can_transition_to_next: bool
+    submissions_deadline: Optional[datetime] = None
+    judging_deadline: Optional[datetime] = None
+    results_publish_time: Optional[datetime] = None
+    time_remaining_in_phase: Optional[int] = None  # in minutes
+
+class PhaseTransitionRequest(BaseModel):
+    new_phase: str
+
+class MetricsCardResponse(BaseModel):
+    title: str
+    value: str
+    percentage: Optional[float] = None
+    trend: Optional[str] = None
+    variant: str = "default"
+
+class OrganizerDashboardResponse(BaseModel):
+    event_status: EventStatusResponse
+    metrics: List[MetricsCardResponse]
+    evaluation_progress: List[EvaluationProgressResponse]
+    judge_performance: List[JudgePerformanceResponse]
+    bottlenecks: BottlenecksResponse
+    last_updated: datetime
+
+
+# =============================================
+# PHASE 1: RESULTS & LEADERBOARD
+# =============================================
+class TeamResultsDetail(BaseModel):
+    team_id: int
+    team_name: str
+    rank: int
+    final_score: float
+    avg_score: float
+    evaluations_received: int
+    criteria_scores: Dict[int, float]  # criterion_id -> score
+    feedback_summary: Optional[str] = None
+
+class LeaderboardEntryResponse(BaseModel):
+    rank: int
+    team_id: int
+    team_name: str
+    final_score: float
+    avg_score: float
+    evaluations_received: int
+    badge: Optional[str] = None  # gold, silver, bronze
+
+class LeaderboardResponse(BaseModel):
+    hackathon_id: int
+    hackathon_name: str
+    published_at: Optional[datetime] = None
+    entries: List[LeaderboardEntryResponse]
+    total_teams: int
+    last_updated: datetime
+
+class PublishResultsResponse(BaseModel):
+    status: str
+    published_at: datetime
+    team_count: int
+    winning_team: Optional[str] = None
+
+
+# =============================================
+# PHASE 2: APPEALS SYSTEM
+# =============================================
+class AppealSubmissionRequest(BaseModel):
+    evaluation_id: int
+    criterion_id: Optional[int] = None
+    reason: str  # incorrect_scoring, missing_evaluation, other
+    description: str
+    evidence_url: Optional[str] = None
+
+class AppealResponse(BaseModel):
+    id: int
+    team_id: int
+    evaluation_id: int
+    criterion_id: Optional[int] = None
+    reason: str
+    description: str
+    evidence_url: Optional[str] = None
+    status: str
+    submitted_at: datetime
+    reviewed_at: Optional[datetime] = None
+    review_notes: Optional[str] = None
+    resolution: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+class AppealReviewRequest(BaseModel):
+    decision: str  # approved, rejected
+    resolution: str  # score_adjusted, re_evaluated, no_change
+    review_notes: str
+
+
+# =============================================
+# PHASE 2: COMMUNICATION
+# =============================================
+class AnnouncementCreateFullRequest(BaseModel):
+    title: str
+    body: str
+    target_role: str = "all"  # judge, team, organizer, all
+    scheduled_time: Optional[datetime] = None
+    hackathon_id: int
+
+class AnnouncementResponseFull(BaseModel):
+    id: int
+    title: str
+    body: str
+    target_role: str
+    scheduled_time: Optional[datetime] = None
+    published_at: Optional[datetime] = None
+    author_id: int
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
     current_round: Optional[Dict[str, Any]] = None
     upcoming_rounds: List[Dict[str, Any]] = []
     recent_activity: List[Dict[str, Any]] = []

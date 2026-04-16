@@ -1,4 +1,5 @@
 import os
+import logging
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.pool import NullPool, QueuePool
@@ -6,12 +7,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 # We expect a Neon Postgres string like "postgresql://user:password@ep-cool-db.us-east-2.aws.neon.tech/dbname"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Validate Neon connection
 if not DATABASE_URL:
-    print("⚠️  WARNING: No DATABASE_URL found in .env. Using SQLite for local development only.")
     DATABASE_URL = "sqlite:///./evalence.db"
 elif not DATABASE_URL.startswith(("postgresql://", "postgresql+psycopg2://")):
     raise ValueError("❌ DATABASE_URL must be a PostgreSQL connection string for Neon")
@@ -25,7 +27,6 @@ if DATABASE_URL.startswith("sqlite"):
         connect_args=connect_args,
         echo=False
     )
-    print("✅ Using SQLite (local development)")
 else:
     # PostgreSQL/Neon configuration with optimized pooling for serverless
     engine = create_engine(
@@ -42,12 +43,11 @@ else:
             "application_name": "evalence_app"
         }
     )
-    print("[OK] Connected to Neon PostgreSQL database")
 
-# Event handler to handle Neon connection drops
+# Event handler to handle database connection initialization
 @event.listens_for(engine, "connect")
 def receive_connect(dbapi_conn, connection_record):
-    """Optimize Neon connection on connect."""
+    """Optimize database connection on connect."""
     cursor = dbapi_conn.cursor()
     try:
         # Set timezone to UTC

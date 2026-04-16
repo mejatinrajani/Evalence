@@ -4,6 +4,155 @@ const BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/a
 console.log('[API Client] Initialized with BASE_URL:', BASE_URL)
 console.log('[API Client] VITE_API_URL env var:', import.meta.env.VITE_API_URL)
 
+// ============================================
+// Unified API Endpoints Configuration
+// ============================================
+
+export const PHASE1_ENDPOINTS = {
+  // Auth
+  auth: {
+    login: '/auth/login',
+    register: '/auth/register',
+    refresh: '/auth/refresh',
+    logout: '/auth/logout',
+    me: '/auth/me',
+    updateProfile: '/auth/me',
+  },
+  // Hackathons
+  hackathons: {
+    list: '/hackathons',
+    create: '/hackathons',
+    detail: (id: number) => `/hackathons/${id}`,
+    update: (id: number) => `/hackathons/${id}`,
+    stats: (id: number) => `/hackathons/${id}/stats`,
+  },
+  // Teams
+  teams: {
+    list: (hackathonId: number) => `/hackathons/${hackathonId}/teams`,
+    create: '/teams',
+    update: (id: number) => `/teams/${id}`,
+    delete: (id: number) => `/teams/${id}`,
+    import: (hackathonId: number) => `/hackathons/${hackathonId}/teams/import`,
+  },
+  // Projects
+  projects: {
+    submit: '/projects',
+    list: (hackathonId: number) => `/hackathons/${hackathonId}/projects`,
+  },
+  // Evaluations
+  evaluations: {
+    submit: '/evaluations',
+    queue: '/judge/queue',
+    assigned: '/judge/evaluations/assigned',
+    history: '/judge/evaluations/history',
+  },
+  // Announcements
+  announcements: {
+    create: (hackathonId: number) => `/hackathons/${hackathonId}/announcements`,
+    list: (hackathonId: number) => `/hackathons/${hackathonId}/announcements`,
+  },
+  // Leaderboard
+  leaderboard: {
+    get: (hackathonId: number) => `/hackathons/${hackathonId}/leaderboard`,
+  },
+  // Stats
+  stats: {
+    platform: '/stats',
+    hackathon: (hackathonId: number) => `/hackathons/${hackathonId}/stats`,
+  },
+}
+
+export const PHASE2_ENDPOINTS = {
+  // Judge Portal
+  judge: {
+    dashboard: '/judge/dashboard',
+    assigned: '/judge/evaluations/assigned',
+    detail: (assignmentId: number) => `/judge/evaluations/assigned/${assignmentId}`,
+    submit: '/judge/evaluations/submit',
+    update: (assignmentId: number) => `/judge/evaluations/${assignmentId}`,
+    history: '/judge/evaluations/history',
+    progress: '/judge/progress',
+  },
+  // Judge Assignments
+  assignments: {
+    create: (hackathonId: number) => `/me/hackathons/${hackathonId}/judge-assignments`,
+    list: (hackathonId: number) => `/me/hackathons/${hackathonId}/judge-assignments`,
+    update: (hackathonId: number, assignmentId: number) => `/me/hackathons/${hackathonId}/judge-assignments/${assignmentId}`,
+    delete: (hackathonId: number, assignmentId: number) => `/me/hackathons/${hackathonId}/judge-assignments/${assignmentId}`,
+  },
+  // Rounds
+  rounds: {
+    list: (hackathonId: number) => `/me/hackathons/${hackathonId}/rounds`,
+    create: (hackathonId: number) => `/me/hackathons/${hackathonId}/rounds`,
+    update: (hackathonId: number, roundId: number) => `/me/hackathons/${hackathonId}/rounds/${roundId}`,
+    delete: (hackathonId: number, roundId: number) => `/me/hackathons/${hackathonId}/rounds/${roundId}`,
+  },
+  // Analytics
+  analytics: {
+    live: (hackathonId: number) => `/me/hackathons/${hackathonId}/analytics/live`,
+    progress: (hackathonId: number) => `/me/hackathons/${hackathonId}/analytics/progress`,
+  },
+}
+
+export const PHASE3_ENDPOINTS = {
+  // AI Insights
+  ai: {
+    predictions: '/ai/scoring/predictions',
+    scoreTeam: (teamId: number) => `/ai/scoring/predict/${teamId}`,
+  },
+  // Mentorship
+  mentorship: {
+    requests: '/mentorship/requests',
+    create: '/mentorship/requests',
+    sessions: '/mentorship/sessions',
+  },
+  // Messaging
+  messaging: {
+    teamMessages: (teamId: number) => `/messaging/teams/${teamId}/messages`,
+    sendMessage: (teamId: number) => `/messaging/teams/${teamId}/messages`,
+  },
+  // Achievements
+  achievements: {
+    list: '/achievements',
+    userAchievements: (userId: number) => `/achievements/users/${userId}`,
+  },
+  // Reporting
+  reporting: {
+    generate: '/reporting/generate',
+    export: (reportId: number) => `/reporting/${reportId}/export`,
+  },
+}
+
+export const ORG_ENDPOINTS = {
+  // Organizer Portal
+  hackathons: {
+    myHackathons: '/me/hackathons',
+    detail: (hackathonId: number) => `/me/hackathons/${hackathonId}`,
+    update: (hackathonId: number) => `/me/hackathons/${hackathonId}`,
+  },
+  // Judge Credentials
+  judges: {
+    create: (hackathonId: number) => `/me/hackathons/${hackathonId}/judges`,
+    list: (hackathonId: number) => `/me/hackathons/${hackathonId}/judges`,
+    delete: (hackathonId: number, judgeId: number) => `/me/hackathons/${hackathonId}/judges/${judgeId}`,
+  },
+  // Coordinator Credentials
+  coordinators: {
+    create: (hackathonId: number) => `/me/hackathons/${hackathonId}/coordinators`,
+    list: (hackathonId: number) => `/me/hackathons/${hackathonId}/coordinators`,
+    delete: (hackathonId: number, coordinatorId: number) => `/me/hackathons/${hackathonId}/coordinators/${coordinatorId}`,
+  },
+  // Participants
+  participants: {
+    list: (hackathonId: number) => `/me/hackathons/${hackathonId}/participants`,
+    sendEmail: (hackathonId: number) => `/me/hackathons/${hackathonId}/send-email`,
+  },
+  // Results
+  results: {
+    publish: (hackathonId: number) => `/organizer/hackathons/${hackathonId}/publish-results`,
+  },
+}
+
 export const api = {
   getAuthToken: () => localStorage.getItem('evalence_token'),
   getRefreshToken: () => localStorage.getItem('evalence_refresh_token'),

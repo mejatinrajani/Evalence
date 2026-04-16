@@ -36,17 +36,17 @@ class ParticipantImporter:
     """Handle CSV/XLSX import for participants and teams"""
 
     REQUIRED_FIELDS = [
-        'team_name',
-        'participant_1_name', 'participant_1_email', 'participant_1_phone',
-        'participant_2_name', 'participant_2_email', 'participant_2_phone',
-        'participant_3_name', 'participant_3_email', 'participant_3_phone',
-        'participant_4_name', 'participant_4_email', 'participant_4_phone',
-        'participant_5_name', 'participant_5_email', 'participant_5_phone',
-        'problem_statement'
+        "team_name",
+        "participant_1_name", "participant_1_email", "participant_1_phone",
+        "participant_2_name", "participant_2_email", "participant_2_phone",
+        "participant_3_name", "participant_3_email", "participant_3_phone",
+        "participant_4_name", "participant_4_email", "participant_4_phone",
+        "participant_5_name", "participant_5_email", "participant_5_phone",
+        "problem_statement"
     ]
 
-    EMAIL_REGEX = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    PHONE_REGEX = r'^\+?1?\d{9,}$'
+    EMAIL_REGEX = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+    PHONE_REGEX = r"^\+?1?\d{9,}$"
 
     @staticmethod
     def parse_file(file_content: bytes, filename: str) -> Tuple[List[Dict], List[ImportError]]:
@@ -55,9 +55,9 @@ class ParticipantImporter:
         rows = []
 
         try:
-            if filename.endswith('.csv'):
+            if filename.endswith(".csv"):
                 rows, errors = ParticipantImporter._parse_csv(file_content)
-            elif filename.endswith(('.xlsx', '.xls')):
+            elif filename.endswith((".xlsx", ".xls")):
                 rows, errors = ParticipantImporter._parse_excel(file_content)
             else:
                 raise ValueError("File must be CSV or XLSX")
@@ -75,10 +75,10 @@ class ParticipantImporter:
         errors = []
 
         try:
-            text_content = file_content.decode('utf-8')
+            text_content = file_content.decode("utf-8")
             reader = csv.DictReader(io.StringIO(text_content))
 
-            for row_num, row in enumerate(reader, start=2):  # start=2 because header is row 1
+            for row_num, row in enumerate(reader, start=2):
                 rows.append(row)
 
             return rows, errors
@@ -110,59 +110,59 @@ class ParticipantImporter:
         errors = []
 
         # Check team name
-        team_name = str(row.get('team_name', ')).strip()
+        team_name = str(row.get("team_name", "")).strip()
         if not team_name or len(team_name) > 100:
             errors.append(ImportError(
-                row_num, 'team_name', team_name,
-                'Team name required and must be < 100 chars'
+                row_num, "team_name", team_name,
+                "Team name required and must be less than 100 chars"
             ))
 
         # Check problem statement
-        ps = str(row.get('problem_statement', '')).strip()
+        ps = str(row.get("problem_statement", "")).strip()
         if not ps or len(ps) > 1000:
             errors.append(ImportError(
-                row_num, 'problem_statement', ps[:50],
-                'Problem statement required and must be < 1000 chars'
+                row_num, "problem_statement", ps[:50],
+                "Problem statement required and must be less than 1000 chars"
             ))
 
         # Check participants (at least 1, max 5)
         valid_participants = 0
         for i in range(1, 6):
-            name_field = f'participant_{i}_name'
-            email_field = f'participant_{i}_email'
-            phone_field = f'participant_{i}_phone'
+            name_field = f"participant_{i}_name"
+            email_field = f"participant_{i}_email"
+            phone_field = f"participant_{i}_phone"
 
-            name = str(row.get(name_field, '')).strip()
-            email = str(row.get(email_field, '')).strip()
-            phone = str(row.get(phone_field, '')).strip()
+            name = str(row.get(name_field, "")).strip()
+            email = str(row.get(email_field, "")).strip()
+            phone = str(row.get(phone_field, "")).strip()
 
             # If any field present, all required
             if name or email or phone:
                 if not name:
                     errors.append(ImportError(
-                        row_num, name_field, '',
-                        f'Participant {i} name required'
+                        row_num, name_field, "",
+                        f"Participant {i} name is required"
                     ))
 
                 if not email or not re.match(ParticipantImporter.EMAIL_REGEX, email):
                     errors.append(ImportError(
                         row_num, email_field, email,
-                        f'Participant {i} email invalid'
+                        f"Participant {i} email is invalid"
                     ))
 
-                phone_clean = phone.replace(' ', '').replace('-', '')
+                phone_clean = phone.replace(" ", "").replace("-", "")
                 if not phone or not re.match(ParticipantImporter.PHONE_REGEX, phone_clean):
                     errors.append(ImportError(
                         row_num, phone_field, phone,
-                        f'Participant {i} phone invalid (10+ digits)'
+                        f"Participant {i} phone must have 10 or more digits"
                     ))
 
                 valid_participants += 1
 
         if valid_participants == 0:
             errors.append(ImportError(
-                row_num, 'participants', '',
-                'At least 1 participant required'
+                row_num, "participants", "",
+                "At least 1 participant is required"
             ))
 
         return len(errors) == 0, errors
@@ -197,11 +197,11 @@ class ParticipantImporter:
 
                 if row_errors:
                     errors.extend([e.to_dict() for e in row_errors])
-                    if not is_valid:  # Validation errors - skip
+                    if not is_valid:
                         continue
 
                 # Check duplicate team
-                team_name = str(row.get('team_name', '')).strip()
+                team_name = str(row.get("team_name", "")).strip()
                 if team_name.lower() in existing_teams:
                     errors.append({
                         "row": row_num,
@@ -218,7 +218,7 @@ class ParticipantImporter:
                     members=[]
                 )
                 db.add(team)
-                db.flush()  # Get team ID
+                db.flush()
 
                 teams_created += 1
                 existing_teams.add(team_name.lower())
@@ -226,12 +226,12 @@ class ParticipantImporter:
                 # Create participants
                 team_members = []
                 for i in range(1, 6):
-                    name = str(row.get(f'participant_{i}_name', '')).strip()
+                    name = str(row.get(f"participant_{i}_name", "")).strip()
                     if not name:
                         continue
 
-                    email = str(row.get(f'participant_{i}_email', '')).strip()
-                    phone = str(row.get(f'participant_{i}_phone', '')).strip()
+                    email = str(row.get(f"participant_{i}_email", "")).strip()
+                    phone = str(row.get(f"participant_{i}_phone", "")).strip()
 
                     # Check email duplicate
                     if email.lower() in existing_emails:
@@ -245,7 +245,7 @@ class ParticipantImporter:
                     user = User(
                         email=email,
                         full_name=name,
-                        hashed_password="",  # Password to be set separately
+                        hashed_password="",
                         role="participant",
                     )
                     db.add(user)
@@ -268,7 +268,7 @@ class ParticipantImporter:
                 project = Project(
                     team_id=team.id,
                     title=f"{team_name} Project",
-                    description=str(row.get('problem_statement', '')),
+                    description=str(row.get("problem_statement", "")),
                     hackathon_id=hackathon_id
                 )
                 db.add(project)
