@@ -4,6 +4,10 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 import os
 from dotenv import load_dotenv
+import warnings
+
+# Suppress bcrypt version warnings
+warnings.filterwarnings("ignore", category=Warning)
 
 load_dotenv()
 
@@ -16,7 +20,12 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Use bcrypt with increased rounds for better security
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__rounds=12
+)
 
 def verify_password(plain_password, hashed_password):
     """Verify a plain text password against a hashed password."""

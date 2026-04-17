@@ -1,12 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { Card } from '@/components/ui/card';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2, Save, Send, Check, AlertCircle } from 'lucide-react';
 import { api } from '@/lib/api';
+
+// Simple Card component
+const Card = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
+  <div className={`border rounded-lg p-4 bg-white ${className}`}>{children}</div>
+);
+
+// Simple Alert component
+const Alert = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
+  <div className={`border-l-4 border-yellow-400 bg-yellow-50 p-4 ${className}`}>{children}</div>
+);
+
+const AlertDescription = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
+  <p className={`text-sm text-gray-700 ${className}`}>{children}</p>
+);
 
 interface Project {
   id: number;
@@ -198,176 +209,188 @@ export const TeamSubmissionPortal: React.FC = () => {
           </Alert>
         )}
 
-        {/* Tabs */}
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-4">
-            <TabsTrigger value="project-info">Project Info</TabsTrigger>
-            <TabsTrigger value="urls">Links</TabsTrigger>
-            <TabsTrigger value="tech-stack">Tech Stack</TabsTrigger>
-            <TabsTrigger value="history">History</TabsTrigger>
-          </TabsList>
+        {/* Simple Tab Navigation */}
+        <div className="flex gap-2 border-b mb-6">
+          {[
+            { value: 'project-info', label: 'Project Info' },
+            { value: 'urls', label: 'Links' },
+            { value: 'tech-stack', label: 'Tech Stack' },
+            { value: 'history', label: 'History' }
+          ].map((tab) => (
+            <button
+              key={tab.value}
+              onClick={() => setActiveTab(tab.value)}
+              className={`px-4 py-2 font-medium border-b-2 transition ${
+                activeTab === tab.value
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
 
-          {/* Project Info Tab */}
-          <TabsContent value="project-info">
-            <Card className="p-6">
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-900 mb-2">
-                    Project Name *
-                  </label>
-                  <Input
-                    placeholder="Enter your project name"
-                    value={formData.project_name}
-                    onChange={(e) => handleInputChange('project_name', e.target.value)}
-                    disabled={submitted}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-slate-900 mb-2">
-                    Description
-                  </label>
-                  <textarea
-                    placeholder="Describe your project in detail..."
-                    value={formData.description}
-                    onChange={(e) => handleInputChange('description', e.target.value)}
-                    disabled={submitted}
-                    className="w-full h-32 px-4 py-2 border border-slate-300 rounded-lg resize-none disabled:bg-slate-100"
-                  />
-                </div>
+        {/* Project Info Tab */}
+        {activeTab === 'project-info' && (
+          <Card className="p-6">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-slate-900 mb-2">
+                  Project Name *
+                </label>
+                <Input
+                  placeholder="Enter your project name"
+                  value={formData.project_name}
+                  onChange={(e) => handleInputChange('project_name', e.target.value)}
+                  disabled={submitted}
+                />
               </div>
-            </Card>
-          </TabsContent>
 
-          {/* URLs Tab */}
-          <TabsContent value="urls">
-            <Card className="p-6">
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-900 mb-2">
-                    Demo URL
-                  </label>
-                  <Input
-                    placeholder="https://yourproject.com"
-                    value={formData.demo_url}
-                    onChange={(e) => handleInputChange('demo_url', e.target.value)}
-                    disabled={submitted}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-slate-900 mb-2">
-                    GitHub Repository
-                  </label>
-                  <Input
-                    placeholder="https://github.com/yourrepo"
-                    value={formData.github_url}
-                    onChange={(e) => handleInputChange('github_url', e.target.value)}
-                    disabled={submitted}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-slate-900 mb-2">
-                    Presentation Slides
-                  </label>
-                  <Input
-                    placeholder="https://slides.com/yourslides"
-                    value={formData.presentation_slide_url}
-                    onChange={(e) => handleInputChange('presentation_slide_url', e.target.value)}
-                    disabled={submitted}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-slate-900 mb-2">
-                    Demo Video (Optional)
-                  </label>
-                  <Input
-                    placeholder="https://youtu.be/..."
-                    value={formData.project_video_url}
-                    onChange={(e) => handleInputChange('project_video_url', e.target.value)}
-                    disabled={submitted}
-                  />
-                </div>
+              <div>
+                <label className="block text-sm font-semibold text-slate-900 mb-2">
+                  Description
+                </label>
+                <textarea
+                  placeholder="Describe your project in detail..."
+                  value={formData.description}
+                  onChange={(e) => handleInputChange('description', e.target.value)}
+                  disabled={submitted}
+                  className="w-full h-32 px-4 py-2 border border-slate-300 rounded-lg resize-none disabled:bg-slate-100"
+                />
               </div>
-            </Card>
-          </TabsContent>
+            </div>
+          </Card>
+        )}
 
-          {/* Tech Stack Tab */}
-          <TabsContent value="tech-stack">
-            <Card className="p-6">
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-900 mb-2">
-                    Technologies Used
-                  </label>
-                  <div className="flex gap-2 mb-4">
-                    <Input
-                      placeholder="React, Python, PostgreSQL..."
-                      id="tech-input"
-                    />
-                    <Button
-                      onClick={() => {
-                        const input = document.getElementById('tech-input') as HTMLInputElement;
-                        if (input) {
-                          handleTechStackAdd(input.value);
-                          input.value = '';
-                        }
-                      }}
-                      disabled={submitted}
+        {/* URLs Tab */}
+        {activeTab === 'urls' && (
+          <Card className="p-6">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-slate-900 mb-2">
+                  Demo URL
+                </label>
+                <Input
+                  placeholder="https://yourproject.com"
+                  value={formData.demo_url}
+                  onChange={(e) => handleInputChange('demo_url', e.target.value)}
+                  disabled={submitted}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-900 mb-2">
+                  GitHub Repository
+                </label>
+                <Input
+                  placeholder="https://github.com/yourrepo"
+                  value={formData.github_url}
+                  onChange={(e) => handleInputChange('github_url', e.target.value)}
+                  disabled={submitted}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-900 mb-2">
+                  Presentation Slides
+                </label>
+                <Input
+                  placeholder="https://slides.com/yourslides"
+                  value={formData.presentation_slide_url}
+                  onChange={(e) => handleInputChange('presentation_slide_url', e.target.value)}
+                  disabled={submitted}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-900 mb-2">
+                  Demo Video (Optional)
+                </label>
+                <Input
+                  placeholder="https://youtu.be/..."
+                  value={formData.project_video_url}
+                  onChange={(e) => handleInputChange('project_video_url', e.target.value)}
+                  disabled={submitted}
+                />
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {/* Tech Stack Tab */}
+        {activeTab === 'tech-stack' && (
+          <Card className="p-6">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-slate-900 mb-2">
+                  Technologies Used
+                </label>
+                <div className="flex gap-2 mb-4">
+                  <Input
+                    placeholder="React, Python, PostgreSQL..."
+                    id="tech-input"
+                  />
+                  <Button
+                    onClick={() => {
+                      const input = document.getElementById('tech-input') as HTMLInputElement;
+                      if (input) {
+                        handleTechStackAdd(input.value);
+                        input.value = '';
+                      }
+                    }}
+                    disabled={submitted}
+                  >
+                    Add
+                  </Button>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {formData.tech_stack.map(tech => (
+                    <div
+                      key={tech}
+                      className="bg-blue-100 text-blue-900 px-3 py-1 rounded-full text-sm flex items-center gap-2"
                     >
-                      Add
-                    </Button>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {formData.tech_stack.map(tech => (
-                      <div
-                        key={tech}
-                        className="bg-blue-100 text-blue-900 px-3 py-1 rounded-full text-sm flex items-center gap-2"
-                      >
-                        {tech}
-                        {!submitted && (
-                          <button
-                            onClick={() => handleTechStackRemove(tech)}
-                            className="text-blue-600 hover:text-blue-900 font-bold"
-                          >
-                            ×
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+                      {tech}
+                      {!submitted && (
+                        <button
+                          onClick={() => handleTechStackRemove(tech)}
+                          className="text-blue-600 hover:text-blue-900 font-bold"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  ))}
                 </div>
               </div>
-            </Card>
-          </TabsContent>
+            </div>
+          </Card>
+        )}
 
-          {/* History Tab */}
-          <TabsContent value="history">
-            <Card className="p-6">
-              <div className="space-y-4">
-                <h3 className="font-semibold text-slate-900">Submission History</h3>
-                {submissionHistory.length === 0 ? (
-                  <p className="text-slate-600">No history yet</p>
-                ) : (
-                  <div className="space-y-3">
-                    {submissionHistory.map(log => (
-                      <div key={log.id} className="border-l-4 border-blue-500 pl-4 py-2">
-                        <p className="font-semibold text-slate-900 capitalize">{log.action}</p>
-                        <p className="text-sm text-slate-600">
-                          {new Date(log.timestamp).toLocaleString()}
-                        </p>
-                        {log.notes && <p className="text-sm text-slate-600">{log.notes}</p>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </Card>
-          </TabsContent>
-        </Tabs>
+        {/* History Tab */}
+        {activeTab === 'history' && (
+          <Card className="p-6">
+            <div className="space-y-4">
+              <h3 className="font-semibold text-slate-900">Submission History</h3>
+              {submissionHistory.length === 0 ? (
+                <p className="text-slate-600">No history yet</p>
+              ) : (
+                <div className="space-y-3">
+                  {submissionHistory.map(log => (
+                    <div key={log.id} className="border-l-4 border-blue-500 pl-4 py-2">
+                      <p className="font-semibold text-slate-900 capitalize">{log.action}</p>
+                      <p className="text-sm text-slate-600">
+                        {new Date(log.timestamp).toLocaleString()}
+                      </p>
+                      {log.notes && <p className="text-sm text-slate-600">{log.notes}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
 
         {/* Action Buttons */}
         {!submitted && (

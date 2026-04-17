@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Send, AlertCircle, CheckCircle2, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
+import { X, Send, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { CriterionSlider } from './CriterionSlider'
 import { TeamDetailsCard } from './TeamDetailsCard'
@@ -64,12 +64,18 @@ export function EvaluationModal({
 
   // Initialize scores from criteria
   useEffect(() => {
+    if (!isOpen) return
+    
     const initialScores: Record<number, number> = {}
     const initialFeedbacks: Record<number, string> = {}
-    criteria.forEach(c => {
+    
+    criteria.forEach((c) => {
+      console.log(`🔧 Initializing criterion: ID=${c.criterion_id}, Name=${c.criterion_name}`)
       initialScores[c.criterion_id] = c.current_score || 0
       initialFeedbacks[c.criterion_id] = c.feedback || ''
     })
+    
+    console.log(`🔧 Initial scores object:`, initialScores)
     setScores(initialScores)
     setFeedbacks(initialFeedbacks)
   }, [criteria, isOpen])
@@ -81,14 +87,22 @@ export function EvaluationModal({
       setProgress(0)
       return
     }
-    const scored = criteria.filter(c => scores[c.criterion_id] > 0).length
+    const scored = criteria.filter(c => (scores[c.criterion_id] || 0) > 0).length
     const percent = Math.round((scored / criteria.length) * 100)
     setProgress(percent)
     setAllScored(scored === criteria.length)
   }, [scores, criteria])
 
   const handleScoreChange = (criterionId: number, score: number) => {
-    setScores(prev => ({ ...prev, [criterionId]: score }))
+    console.log(`📊 [Modal] Criterion ${criterionId}: Setting score to ${score}`)
+    console.log(`📊 [Modal] Current state before update:`, scores)
+    
+    setScores(prev => {
+      const updated = { ...prev, [criterionId]: score }
+      console.log(`📊 [Modal] State after update:`, updated)
+      console.log(`📊 [Modal] Criterion ${criterionId} value: ${updated[criterionId]}`)
+      return updated
+    })
   }
 
   const handleFeedbackChange = (criterionId: number, feedback: string) => {
@@ -243,24 +257,28 @@ export function EvaluationModal({
                         <p className="text-slate-600">No criteria to evaluate</p>
                       </div>
                     ) : (
-                      criteria.map((criterion, idx) => (
-                        <motion.div
-                          key={criterion.criterion_id}
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: idx * 0.05 }}
-                        >
-                          <CriterionSlider
-                            criterion_id={criterion.criterion_id}
-                            criterion_name={criterion.criterion_name}
-                            max_points={criterion.max_points}
-                            current_score={scores[criterion.criterion_id]}
-                            feedback={feedbacks[criterion.criterion_id]}
-                            onChange={(score) => handleScoreChange(criterion.criterion_id, score)}
-                            onFeedbackChange={(feedback) => handleFeedbackChange(criterion.criterion_id, feedback)}
-                          />
-                        </motion.div>
-                      ))
+                      criteria.map((criterion, idx) => {
+                        const currentScore = Math.max(0, Number(scores[criterion.criterion_id]) || 0)
+                        console.log(`🎨 Rendering: Criterion ID=${criterion.criterion_id} (${criterion.criterion_name}), Score=${currentScore}, max=${criterion.max_points}`)
+                        return (
+                          <motion.div
+                            key={`criterion-${criterion.criterion_id}`}
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: idx * 0.05 }}
+                          >
+                            <CriterionSlider
+                              criterion_id={criterion.criterion_id}
+                              criterion_name={criterion.criterion_name}
+                              max_points={Math.max(1, Number(criterion.max_points) || 100)}
+                              current_score={currentScore}
+                              feedback={feedbacks[criterion.criterion_id] || ''}
+                              onChange={(score) => handleScoreChange(criterion.criterion_id, score)}
+                              onFeedbackChange={(feedback) => handleFeedbackChange(criterion.criterion_id, feedback)}
+                            />
+                          </motion.div>
+                        )
+                      })
                     )}
                   </motion.div>
                 )}
@@ -293,7 +311,7 @@ export function EvaluationModal({
                 ) : (
                   <div className="flex items-center gap-2 text-amber-600">
                     <AlertCircle size={18} />
-                    <span className="text-sm font-medium">{criteria.length - (criteria.filter(c => scores[c.criterion_id] > 0).length)} criteria remaining</span>
+                    <span className="text-sm font-medium">{criteria.length - Object.values(scores).filter(s => s > 0).length} criteria remaining</span>
                   </div>
                 )}
               </div>

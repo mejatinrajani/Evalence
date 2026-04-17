@@ -41,16 +41,30 @@ class Hackathon(Base):
     end_date = Column(String)
     prize_pool = Column(String, nullable=True)
     max_teams = Column(Integer, nullable=True)
-    status = Column(String, default="draft")  # draft, registration_open, evaluating, completed
+    status = Column(String, default="draft")  # draft, registration_open, submission, evaluating, results_published, completed
     mentor_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
     updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now(), nullable=True)
+
+    # Phase 1: Event Lifecycle Auto-transitions
+    registration_start = Column(DateTime, nullable=True)
+    registration_end = Column(DateTime, nullable=True)
+    submission_start = Column(DateTime, nullable=True)
+    submission_end = Column(DateTime, nullable=True)
+    evaluation_start = Column(DateTime, nullable=True)
+    evaluation_end = Column(DateTime, nullable=True)
+    
+    # Auto-transition control
+    auto_transition_enabled = Column(Boolean, default=True)
+    status_last_changed = Column(DateTime, default=datetime.utcnow)
 
     mentor = relationship("User", back_populates="hackathons")
     teams = relationship("Team", back_populates="hackathon", cascade="all, delete-orphan")
     rounds = relationship("Round", back_populates="hackathon", cascade="all, delete-orphan")
     announcements = relationship("Announcement", back_populates="hackathon", cascade="all, delete-orphan")
     projects = relationship("Project", back_populates="hackathon", cascade="all, delete-orphan")
+    leaderboards = relationship("Leaderboard", back_populates="hackathon", cascade="all, delete-orphan")
+    task_logs = relationship("TaskLog", back_populates="hackathon", cascade="all, delete-orphan")
 
 
 class Team(Base):
@@ -90,6 +104,7 @@ class Criteria(Base):
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     weight = Column(Float, default=10)
+    max_points = Column(Integer, default=100)
     round_id = Column(Integer, ForeignKey("rounds.id"))
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
     updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now(), nullable=True)
@@ -172,8 +187,9 @@ class Project(Base):
     tech_stack = Column(JSON, nullable=True)  # ["React", "FastAPI"]
     presentation_slide_url = Column(String, nullable=True)
     project_video_url = Column(String, nullable=True)
-    submission_status = Column(String, default="draft")  # draft, submitted, withdrawn
+    submission_status = Column(String, default="draft")  # draft, submitted, locked, withdrawn
     submitted_at = Column(DateTime, nullable=True)
+    locked_at = Column(DateTime, nullable=True)  # Phase 1: When submission was locked at deadline
     team_id = Column(Integer, ForeignKey("teams.id"), unique=True)
     hackathon_id = Column(Integer, ForeignKey("hackathons.id"))
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
@@ -401,3 +417,94 @@ class TeamFeedback(Base):
     judge = relationship("User")
     team = relationship("Team")
 
+
+# ============================================================
+# PHASE 1: Event Lifecycle Automation Models
+# ============================================================
+
+class TaskLog(Base):
+    """Track execution of background tasks for debugging"""
+    __tablename__ = "task_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_name = Column(String, index=True)  # check_event_deadlines, auto_close_submissions, calculate_leaderboard
+    hackathon_id = Column(Integer, ForeignKey("hackathons.id"), nullable=True, index=True)
+    status = Column(String)  # 'pending', 'running', 'success', 'failed'
+    error_message = Column(Text, nullable=True)
+    executed_at = Column(DateTime, default=datetime.utcnow, index=True)
+    completed_at = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    task_output = Column(JSON, nullable=True)  # Store task result/output
+
+    hackathon = relationship("Hackathon", back_populates="task_logs")
+
+
+class Leaderboard(Base):
+    """Store calculated leaderboard snapshots for a hackathon"""
+    __tablename__ = "leaderboards"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hackathon_id = Column(Integer, ForeignKey("hackathons.id"), index=True, nullable=False)
+    
+    # Calculation metadata
+    total_teams = Column(Integer, default=0)
+    global_mean = Column(Float, default=0.0)
+    global_std = Column(Float, default=0.0)
+    
+    # Status
+    is_published = Column(Boolean, default=False, index=True)
+    calculation_timestamp = Column(DateTime, default=datetime.utcnow)
+    published_at = Column(DateTime, nullable=True)
+    
+    # Data snapshot (for historical records)
+    data_snapshot = Column(JSON, nullable=True)  # Full leaderboard at time of calculation
+    
+    created_at = Column(DateTime, server_default=func.now(), nullable=True)
+    updated_at = Column(DateTime, onupdate=func.now(), server_default=func.now(), nullable=True)
+
+    hackathon = relationship("Hackathon", back_populates="leaderboards")
+    entries = relationship("LeaderboardEntry", back_populates="leaderboard", cascade="all, delete-orphan")
+
+
+class LeaderboardEntry(Base):
+    """Individual team entry in a leaderboard"""
+    __tablename__ = "leaderboard_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    leaderboard_id = Column(Integer, ForeignKey("leaderboards.id"), index=True, nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id"), index=True, nullable=False)
+    
+    # Ranking info
+    rank = Column(Integer)  # 1st, 2nd, 3rd, etc.
+    score = Column(Float)  # Final average score
+    z_score = Column(Float, default=0.0)  # Statistical z-score for normalization
+    std_dev = Column(Float, default=0.0)  # Standard deviation of scores
+    evaluation_count = Column(Integer, default=0)  # Number of judges who evaluated
+    
+    # Anomaly detection
+    anomaly_flagged = Column(Boolean, default=False)
+    anomaly_reason = Column(String, nullable=True)  # Why this was flagged as anomaly
+    
+    created_at = Column(DateTime, server_default=func.now(), nullable=True)
+
+    leaderboard = relationship("Leaderboard", back_populates="entries")
+    team = relationship("Team")
+
+
+class AdminLog(Base):
+    """Audit trail for admin actions (forced transitions, override submissions, etc)"""
+    __tablename__ = "admin_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    action_type = Column(String, index=True)  # force_phase_transition, override_deadline, adjust_score, etc
+    resource_type = Column(String)  # hackathon, team, evaluation, project, etc
+    resource_id = Column(Integer, nullable=True)
+    old_value = Column(JSON, nullable=True)  # What it was before
+    new_value = Column(JSON, nullable=True)  # What it changed to
+    change_reason = Column(Text, nullable=True)  # Why the change was made
+    ip_address = Column(String(45), nullable=True)  # IP address of admin making change
+    
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    admin = relationship("User")

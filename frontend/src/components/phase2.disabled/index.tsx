@@ -25,6 +25,10 @@ export type { AnalyticsData, JudgeAnalysis } from './AnalyticsDashboard';
 export { RealTimeLeaderboard } from './RealTimeLeaderboard';
 export type { LeaderboardTeam } from './RealTimeLeaderboard';
 
+// ==================== PHASE 1: SUBMISSION & COUNTDOWN ====================
+export { SubmissionCountdown } from './SubmissionCountdown';
+export { LeaderboardView } from './LeaderboardView';
+
 // ==================== TYPES ====================
 export interface Phase2Config {
   enableWebSocket: boolean;

@@ -32,8 +32,6 @@ logger = logging.getLogger(__name__)
 
 import database
 import models
-import models_phase2
-import models_phase3
 import schemas
 import security
 from mail_service import EmailService
@@ -41,14 +39,8 @@ from services.evaluation_service import EvaluationService
 from services.import_service import ParticipantImporter
 from services.websocket_manager import ws_manager
 from services.results_service import ResultsCalculator
-from api_phase2 import router as router_phase2
-from api_phase3 import router as router_phase3
 
 app = FastAPI(title="Evalence API", version="2.0.0", description="Professional Hackathon Management Platform")
-
-# Include routers from all phases
-app.include_router(router_phase2, prefix="/api", tags=["phase2"])
-app.include_router(router_phase3, prefix="/api", tags=["phase3"])
 
 # Create DB tables on app startup in a background thread (non-blocking)
 def init_database():
@@ -57,12 +49,12 @@ def init_database():
     try:
         # Ensure all model modules are imported so their tables are registered in metadata
         import models
-        import models_phase2
-        import models_phase3
+        import models_admin
+        import models_feedback
         
-        # Create all tables (Phase 1, 2, 3)
+        # Create all tables
         models.Base.metadata.create_all(bind=database.engine)
-        logger.info("✅ Database tables created successfully (all phases)")
+        logger.info("✅ Database tables created successfully")
     except Exception as e:
         logger.error(f"Database error: {str(e)[:150]}")
 
@@ -170,6 +162,48 @@ async def general_exception_handler(request: Request, exc: Exception):
             "error": True,
             "status_code": 500,
             "detail": "Internal server error",
+            "path": str(request.url.path)
+        }
+    )
+
+# Add RequestValidationError handler for better debugging
+from pydantic import ValidationError
+from fastapi.exceptions import RequestValidationError
+
+@app.exception_handler(ValidationError)
+async def validation_exception_handler(request: Request, exc: ValidationError):
+    """Handle Pydantic validation errors with detailed logging."""
+    errors = exc.errors()
+    logger.error(f"🔴 [Validation Error] Path: {request.url.path}")
+    logger.error(f"🔴 [Validation Error] Method: {request.method}")
+    logger.error(f"🔴 [Validation Error] Errors: {errors}")
+    
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": True,
+            "status_code": 422,
+            "detail": "Validation error",
+            "errors": errors,
+            "path": str(request.url.path)
+        }
+    )
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle FastAPI RequestValidationError with detailed logging."""
+    errors = exc.errors()
+    logger.error(f"🔴 [Request Validation Error] Path: {request.url.path}")
+    logger.error(f"🔴 [Request Validation Error] Method: {request.method}")
+    logger.error(f"🔴 [Request Validation Error] Errors: {errors}")
+    
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": True,
+            "status_code": 422,
+            "detail": "Request validation error",
+            "errors": errors,
             "path": str(request.url.path)
         }
     )
@@ -1028,6 +1062,7 @@ def submit_team_evaluation(
     current_user: models.User = Depends(require_role("judge", "super_admin"))
 ):
     """Submit evaluation scores for a team."""
+    logger.warning(f"📥 [Submit Evaluation] Received request: team_id={request.team_id}, round_id={request.round_id}, scores={request.scores}, feedback={request.feedback}")
     try:
         # Verify assignment exists and belongs to judge
         from services.evaluation import EvaluationService

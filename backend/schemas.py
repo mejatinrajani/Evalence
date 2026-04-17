@@ -49,7 +49,7 @@ class StatusUpdate(BaseModel):
 # =============================================
 class CriterionBase(BaseModel):
     name: str
-    max_points: int
+    max_points: Optional[int] = 100
 
 class CriterionResponse(CriterionBase):
     id: int
@@ -367,7 +367,7 @@ class TeamQueueItemResponse(BaseModel):
 class CriterionEvaluationDetail(BaseModel):
     criterion_id: int
     criterion_name: str
-    max_points: int
+    max_points: Optional[int] = 100
     current_score: Optional[int] = None
     feedback: Optional[str] = None
     description: Optional[str] = None
@@ -698,7 +698,7 @@ class CriteriaDetailResponse(BaseModel):
     name: str
     description: Optional[str]
     weight: float
-    max_score: int = 100
+    max_points: Optional[int] = 100
 
     class Config:
         from_attributes = True

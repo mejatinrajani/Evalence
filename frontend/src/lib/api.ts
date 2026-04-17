@@ -1,5 +1,5 @@
 // Use environment variable or fallback to localhost for dev
-const BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api'
+export const BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api'
 
 console.log('[API Client] Initialized with BASE_URL:', BASE_URL)
 console.log('[API Client] VITE_API_URL env var:', import.meta.env.VITE_API_URL)

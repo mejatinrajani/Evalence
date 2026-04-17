@@ -26,7 +26,7 @@ export default function JudgeDashboard() {
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [loading, setLoading] = useState(true)
   const [activeModal, setActiveModal] = useState<any>(null)
-  const [scores, setScores] = useState<Record<number, number>>({})
+  const [scores, setScores] = useState<Record<string, number>>({})
   const [feedback, setFeedback] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [focusedCriterionIdx, setFocusedCriterionIdx] = useState(0)
@@ -56,11 +56,19 @@ export default function JudgeDashboard() {
       }
       if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
         const c = criteria[focusedCriterionIdx]
-        setScores(prev => ({ ...prev, [c.criterion_id]: Math.min((prev[c.criterion_id] ?? Math.floor(c.max_points / 2)) + 1, c.max_points) }))
+        const scoreKey = `${c.criterion_id}-${c.round_id}`
+        const safeMaxPoints = typeof c.max_points === 'number' && c.max_points > 0 ? c.max_points : 100
+        const currentVal = scores[scoreKey as any] ?? Math.floor(safeMaxPoints / 2)
+        const newVal = Math.min(currentVal + 1, safeMaxPoints)
+        setScores(prev => ({ ...prev, [scoreKey]: newVal }))
       }
       if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
         const c = criteria[focusedCriterionIdx]
-        setScores(prev => ({ ...prev, [c.criterion_id]: Math.max((prev[c.criterion_id] ?? Math.floor(c.max_points / 2)) - 1, 0) }))
+        const scoreKey = `${c.criterion_id}-${c.round_id}`
+        const safeMaxPoints = typeof c.max_points === 'number' && c.max_points > 0 ? c.max_points : 100
+        const currentVal = scores[scoreKey as any] ?? Math.floor(safeMaxPoints / 2)
+        const newVal = Math.max(currentVal - 1, 0)
+        setScores(prev => ({ ...prev, [scoreKey]: newVal }))
       }
       if (e.key === 'Enter' && !submitting) submitScores()
     }
@@ -85,26 +93,70 @@ export default function JudgeDashboard() {
   const completedAll = queue.filter(q => q.already_scored).length
 
   const openScorecard = (teamEntry: any) => {
-    const init: Record<number, number> = {}
-    teamEntry.criteria.forEach((c: QueueItem) => { init[c.criterion_id] = c.current_score ?? Math.floor(c.max_points / 2) })
-    setScores(init)
+    const init: Record<string, number> = {}
+    teamEntry.criteria.forEach((c: QueueItem) => { 
+      const safeMaxPoints = typeof c.max_points === 'number' && c.max_points > 0 ? c.max_points : 100
+      // Use compound key: criterion_id + round_id to ensure uniqueness
+      const key = `${c.criterion_id}-${c.round_id}`
+      init[key] = c.current_score ?? Math.floor(safeMaxPoints / 2) 
+    })
+    console.log(`🟢 [OpenScorecard] Initialized scores:`, init)
+    setScores(init as any)
     setFeedback('')
     setFocusedCriterionIdx(0)
     setActiveModal({ teamId: teamEntry.team_id, teamName: teamEntry.team_name, hackathonId: teamEntry.criteria[0]?.hackathon_id, criteria: teamEntry.criteria })
   }
 
   const submitScores = async () => {
-    if (!activeModal) return
+    if (!activeModal || !activeModal.criteria || activeModal.criteria.length === 0) {
+      console.error(`❌ [Submit] No modal or criteria`)
+      return
+    }
     setSubmitting(true)
     try {
-      for (const [criterionId, score] of Object.entries(scores)) {
-        await api.post('/evaluations', { team_id: activeModal.teamId, criterion_id: parseInt(criterionId), score, feedback })
+      // Get round_id from first criterion (all criteria in a scorecard are from same round)
+      const roundId = activeModal.criteria[0].round_id
+      
+      // Transform compound keys back to criterion_id for submission
+      const scoresPayload: Record<number, number> = {}
+      for (const [scoreKey, score] of Object.entries(scores)) {
+        const criterionId = parseInt(scoreKey.split('-')[0])
+        const validScore = typeof score === 'number' && !isNaN(score) ? score : 0
+        scoresPayload[criterionId] = validScore
+        console.log(`📊 [Submit] Criterion ${criterionId}: ${validScore}`)
       }
+      
+      // Build payload - feedback is optional and should be omitted if empty
+      const payload: any = {
+        team_id: activeModal.teamId,
+        round_id: roundId,
+        scores: scoresPayload
+      }
+      
+      // Only add feedback if provided
+      if (feedback && feedback.trim()) {
+        // For now, apply same feedback to all criteria
+        const feedbackDict: Record<number, string> = {}
+        for (const key of Object.keys(scoresPayload)) {
+          feedbackDict[parseInt(key)] = feedback
+        }
+        payload.feedback = feedbackDict
+      }
+      
+      console.log(`📤 [Submit] Sending payload:`, JSON.stringify(payload, null, 2))
+      const response = await api.post('/judge/evaluations/submit', payload)
+      console.log(`✅ [Submit] Response:`, response)
+      
       toast.success(`✅ Scores saved for "${activeModal.teamName}"!`)
       setActiveModal(null)
-      loadQueue()
-    } catch {
-      toast.error('Failed to submit scores. Try again.')
+      setScores({})
+      setFeedback('')
+      // Refresh the queue
+      await loadQueue()
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      console.error(`❌ [Submit] Full error:`, err)
+      toast.error(`Failed to submit scores: ${errorMsg}`)
     } finally {
       setSubmitting(false)
     }
@@ -201,11 +253,11 @@ export default function JudgeDashboard() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {Object.values(hack.teams).map((team: any) => {
+                    {Object.values(hack.teams).map((team: any, teamIdx: number) => {
                       const pct = Math.round((team.completed / team.total) * 100)
                       const done = team.completed === team.total
                       return (
-                        <tr key={team.team_id} className="hover:bg-indigo-50/30 group transition-colors">
+                        <tr key={`team-${team.team_id}-${teamIdx}`} className="hover:bg-indigo-50/30 group transition-colors">
                           <td className="px-6 py-4 font-bold text-slate-900">{team.team_name}</td>
                           <td className="px-6 py-4 text-[11px] font-bold uppercase tracking-wider text-slate-400">{team.round_name}</td>
                           <td className="px-6 py-4 text-slate-500 text-xs">{team.total} criteria</td>
@@ -279,44 +331,56 @@ export default function JudgeDashboard() {
                 {/* Criteria sliders */}
                 <div className="p-6 overflow-y-auto flex-1 space-y-7">
                   {activeModal.criteria.map((criterion: QueueItem, idx: number) => {
-                    const val = scores[criterion.criterion_id] ?? Math.floor(criterion.max_points / 2)
-                    const pct = Math.round((val / criterion.max_points) * 100)
+                    // Use compound key: criterion_id + round_id for true uniqueness
+                    const scoreKey = `${criterion.criterion_id}-${criterion.round_id}`
+                    const val = scores[scoreKey as any]
+                    // Safe number handling - default to mid-point if undefined
+                    const safeVal = typeof val === 'number' && !isNaN(val) ? val : Math.floor((criterion.max_points || 100) / 2)
+                    const safeMaxPoints = typeof criterion.max_points === 'number' && criterion.max_points > 0 ? criterion.max_points : 100
+                    const pct = Math.round((safeVal / safeMaxPoints) * 100)
                     const isFocused = idx === focusedCriterionIdx
                     return (
                       <div
-                        key={criterion.criterion_id}
+                        key={`criterion-${scoreKey}`}
                         onClick={() => setFocusedCriterionIdx(idx)}
                         className={`p-4 rounded-none hover:rounded-lg border transition-all cursor-pointer ${isFocused ? 'border-indigo-600 bg-indigo-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}
                       >
                         <div className="flex justify-between items-center mb-3">
                           <label className="text-sm font-bold text-slate-800">{criterion.criterion_name}</label>
                           <div className="flex items-center gap-1">
-                            <span className={`text-2xl font-black tabular-nums ${pct >= 70 ? 'text-emerald-600' : pct >= 40 ? 'text-amber-600' : 'text-rose-500'}`}>{val}</span>
-                            <span className="text-slate-400 text-sm font-semibold">/{criterion.max_points}</span>
+                            <span className={`text-2xl font-black tabular-nums ${pct >= 70 ? 'text-emerald-600' : pct >= 40 ? 'text-amber-600' : 'text-rose-500'}`}>{safeVal}</span>
+                            <span className="text-slate-400 text-sm font-semibold">/{safeMaxPoints}</span>
                           </div>
                         </div>
                         <input
                           type="range"
-                          min={0}
-                          max={criterion.max_points}
-                          value={val}
+                          min="0"
+                          max={safeMaxPoints}
+                          value={safeVal}
                           onChange={e => {
+                            const newScore = parseInt(e.target.value)
+                            console.log(`🎯 [JudgeDashboard] Criterion ${criterion.criterion_id} (Round ${criterion.round_id}, ${criterion.criterion_name}): ${newScore}/${safeMaxPoints}`)
                             setFocusedCriterionIdx(idx)
-                            setScores(prev => ({ ...prev, [criterion.criterion_id]: parseInt(e.target.value) }))
+                            setScores(prev => {
+                              const updated = { ...prev, [scoreKey]: newScore }
+                              console.log(`📊 [JudgeDashboard] Updated scores:`, updated)
+                              return updated as any
+                            })
                           }}
                           className="w-full accent-indigo-600"
                           style={{ '--val': `${pct}%` } as any}
                         />
                         <div className="flex justify-between text-[10px] text-slate-400 mt-1.5 font-semibold">
                           <span>0 — Below expectations</span>
-                          <span>{criterion.max_points} — Exceptional ⭐</span>
+                          <span>{safeMaxPoints} — Exceptional ⭐</span>
                         </div>
                       </div>
                     )
                   })}
 
+
                   {/* Qualitative feedback */}
-                  <div>
+                  <div className="pt-2">
                     <label className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-2 block">Feedback for Team (Optional)</label>
                     <textarea
                       rows={3}
